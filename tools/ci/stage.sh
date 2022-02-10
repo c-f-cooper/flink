@@ -76,7 +76,6 @@ flink-contrib/flink-connector-wikiedits,\
 flink-filesystems,\
 flink-filesystems/flink-fs-hadoop-shaded,\
 flink-filesystems/flink-hadoop-fs,\
-flink-filesystems/flink-mapr-fs,\
 flink-filesystems/flink-oss-fs-hadoop,\
 flink-filesystems/flink-s3-fs-base,\
 flink-filesystems/flink-s3-fs-hadoop,\
@@ -110,6 +109,7 @@ flink-connectors/flink-connector-rabbitmq,\
 flink-connectors/flink-connector-twitter,\
 flink-connectors/flink-connector-kinesis,\
 flink-connectors/flink-connector-aws-kinesis-data-streams,\
+flink-connectors/flink-connector-aws-kinesis-firehose,\
 flink-metrics/flink-metrics-dropwizard,\
 flink-metrics/flink-metrics-graphite,\
 flink-metrics/flink-metrics-jmx,\
