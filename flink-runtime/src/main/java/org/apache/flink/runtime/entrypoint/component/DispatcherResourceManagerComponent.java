@@ -129,17 +129,7 @@ public class DispatcherResourceManagerComponent implements AutoCloseableAsync {
     public CompletableFuture<Void> stopApplication(
             final ApplicationStatus applicationStatus, final @Nullable String diagnostics) {
         return internalShutdown(
-                () ->
-                        resourceManagerService
-                                .deregisterApplication(applicationStatus, diagnostics)
-                                // suppress deregister exception because of FLINK-25893
-                                .exceptionally(
-                                        exception -> {
-                                            LOG.warn(
-                                                    "Could not properly deregister the application.",
-                                                    exception);
-                                            return null;
-                                        }));
+                () -> resourceManagerService.deregisterApplication(applicationStatus, diagnostics));
     }
 
     /**
@@ -156,7 +146,7 @@ public class DispatcherResourceManagerComponent implements AutoCloseableAsync {
             final Supplier<CompletableFuture<?>> additionalShutdownAction) {
         if (isRunning.compareAndSet(true, false)) {
             final CompletableFuture<Void> operationsConsumedFuture =
-                    dispatcherOperationCaches.shutdownCaches();
+                    dispatcherOperationCaches.closeAsync();
             final CompletableFuture<Void> webMonitorShutdownFuture =
                     FutureUtils.composeAfterwards(
                             operationsConsumedFuture, webMonitorEndpoint::closeAsync);

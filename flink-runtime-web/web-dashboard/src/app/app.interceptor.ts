@@ -16,14 +16,20 @@
  * limitations under the License.
  */
 
-import { HttpEvent, HttpHandler, HttpInterceptor, HttpRequest } from '@angular/common/http';
+import {
+  HttpEvent,
+  HttpHandler,
+  HttpInterceptor,
+  HttpRequest,
+  HttpResponseBase,
+  HttpStatusCode
+} from '@angular/common/http';
 import { Injectable, Injector } from '@angular/core';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 
-import { NzNotificationService } from 'ng-zorro-antd/notification';
-
-import { StatusService } from 'services';
+import { StatusService } from '@flink-runtime-web/services';
+import { NzNotificationService, NzNotificationDataOptions } from 'ng-zorro-antd/notification';
 
 @Injectable()
 export class AppInterceptor implements HttpInterceptor {
@@ -33,9 +39,23 @@ export class AppInterceptor implements HttpInterceptor {
     // Error response from below url should be ignored
     const ignoreErrorUrlEndsList = ['checkpoints/config', 'checkpoints'];
     const ignoreErrorMessage = ['File not found.'];
+    const option: NzNotificationDataOptions = {
+      nzDuration: 0,
+      nzStyle: { width: 'auto', 'white-space': 'pre-wrap' }
+    };
 
-    return next.handle(req).pipe(
+    return next.handle(req.clone({ withCredentials: true })).pipe(
       catchError(res => {
+        if (
+          res instanceof HttpResponseBase &&
+          (res.status == HttpStatusCode.MovedPermanently ||
+            res.status == HttpStatusCode.TemporaryRedirect ||
+            res.status == HttpStatusCode.SeeOther) &&
+          res.headers.has('Location')
+        ) {
+          window.location.href = String(res.headers.get('Location'));
+        }
+
         const errorMessage = res && res.error && res.error.errors && res.error.errors[0];
         if (
           errorMessage &&
@@ -45,7 +65,7 @@ export class AppInterceptor implements HttpInterceptor {
           this.injector.get<StatusService>(StatusService).listOfErrorMessage.push(errorMessage);
           this.injector
             .get<NzNotificationService>(NzNotificationService)
-            .info('Server Response Message:', errorMessage);
+            .info('Server Response Message:', errorMessage.replaceAll(' at ', '\n at '), option);
         }
         return throwError(res);
       })

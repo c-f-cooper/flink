@@ -104,6 +104,13 @@ per running [Flink Job](#flink-job).
 JobMasters are one of the components running in the [JobManager](#flink-jobmanager). A JobMaster is
 responsible for supervising the execution of the [Tasks](#task) of a single job.
 
+#### JobResultStore
+
+The JobResultStore is a Flink component that persists the results of globally terminated
+(i.e. finished, cancelled or failed) jobs to a filesystem, allowing the results to outlive
+a finished job. These results are then used by Flink to determine whether jobs should
+be subject to recovery in highly-available clusters.
+
 #### Logical Graph
 
 A logical graph is a directed graph where the nodes are  [Operators](#operator)
@@ -197,3 +204,16 @@ per-record basis, but might also only change its partitioning or perform an aggr
 [Operators](#operator) and [Functions](#function) are the "physical" parts of Flink's API,
 Transformations are only an API concept. Specifically, most transformations are
 implemented by certain [Operators](#operator).
+
+#### UID
+
+A unique identifier of an [Operator](#operator), either provided by the user or determined from the
+structure of the job. When the [Application](#flink-application) is submitted this is converted to
+a [UID hash](#uid-hash).
+
+#### UID hash
+
+A unique identifier of an [Operator](#operator) at runtime, otherwise known as "Operator ID" or
+"Vertex ID" and generated from a [UID](#uid).
+It is commonly exposed in logs, the REST API or metrics, and most importantly is how
+operators are identified within [savepoints]({{< ref "docs/ops/state/savepoints" >}}).

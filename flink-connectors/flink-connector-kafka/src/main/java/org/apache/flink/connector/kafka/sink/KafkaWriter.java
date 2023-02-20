@@ -89,12 +89,14 @@ class KafkaWriter<IN>
     private final KafkaRecordSerializationSchema<IN> recordSerializer;
     private final Callback deliveryCallback;
     private final KafkaRecordSerializationSchema.KafkaSinkContext kafkaSinkContext;
+
     private final Map<String, KafkaMetricMutableWrapper> previouslyCreatedMetrics = new HashMap<>();
     private final SinkWriterMetricGroup metricGroup;
-    private final Counter numBytesOutCounter;
-    private final ProcessingTimeService timeService;
     private final boolean disabledMetrics;
     private final Counter numRecordsOutCounter;
+    private final Counter numBytesOutCounter;
+    private final Counter numRecordsOutErrorsCounter;
+    private final ProcessingTimeService timeService;
 
     // Number of outgoing bytes at the latest metric sync
     private long latestOutgoingByteTotal;
@@ -153,6 +155,7 @@ class KafkaWriter<IN>
         this.metricGroup = sinkInitContext.metricGroup();
         this.numBytesOutCounter = metricGroup.getIOMetricGroup().getNumBytesOutCounter();
         this.numRecordsOutCounter = metricGroup.getIOMetricGroup().getNumRecordsOutCounter();
+        this.numRecordsOutErrorsCounter = metricGroup.getNumRecordsOutErrorsCounter();
         this.kafkaSinkContext =
                 new DefaultKafkaSinkContext(
                         sinkInitContext.getSubtaskId(),
@@ -188,11 +191,13 @@ class KafkaWriter<IN>
     }
 
     @Override
-    public void write(IN element, Context context) throws IOException {
+    public void write(@Nullable IN element, Context context) throws IOException {
         final ProducerRecord<byte[], byte[]> record =
                 recordSerializer.serialize(element, kafkaSinkContext, context.timestamp());
-        currentProducer.send(record, deliveryCallback);
-        numRecordsOutCounter.inc();
+        if (record != null) {
+            currentProducer.send(record, deliveryCallback);
+            numRecordsOutCounter.inc();
+        }
     }
 
     @Override
@@ -409,7 +414,10 @@ class KafkaWriter<IN>
                 FlinkKafkaInternalProducer<byte[], byte[]> producer =
                         KafkaWriter.this.currentProducer;
                 mailboxExecutor.execute(
-                        () -> throwException(metadata, exception, producer),
+                        () -> {
+                            numRecordsOutErrorsCounter.inc();
+                            throwException(metadata, exception, producer);
+                        },
                         "Failed to send data to Kafka");
             }
 

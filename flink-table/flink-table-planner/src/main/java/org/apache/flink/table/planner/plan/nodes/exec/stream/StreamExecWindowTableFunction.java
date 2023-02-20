@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.logical.TimeAttributeWindowingStrategy;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
@@ -43,6 +44,7 @@ import java.util.List;
 @ExecNodeMetadata(
         name = "stream-exec-window-table-function",
         version = 1,
+        consumedOptions = "table.local-time-zone",
         producedTransformations = CommonExecWindowTableFunction.WINDOW_TRANSFORMATION,
         minPlanVersion = FlinkVersion.v1_15,
         minStateVersion = FlinkVersion.v1_15)
@@ -50,6 +52,7 @@ public class StreamExecWindowTableFunction extends CommonExecWindowTableFunction
         implements StreamExecNode<RowData> {
 
     public StreamExecWindowTableFunction(
+            ReadableConfig tableConfig,
             TimeAttributeWindowingStrategy windowingStrategy,
             InputProperty inputProperty,
             RowType outputType,
@@ -57,6 +60,8 @@ public class StreamExecWindowTableFunction extends CommonExecWindowTableFunction
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecWindowTableFunction.class),
+                ExecNodeContext.newPersistedConfig(
+                        StreamExecWindowTableFunction.class, tableConfig),
                 windowingStrategy,
                 Collections.singletonList(inputProperty),
                 outputType,
@@ -67,10 +72,18 @@ public class StreamExecWindowTableFunction extends CommonExecWindowTableFunction
     public StreamExecWindowTableFunction(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_WINDOWING) TimeAttributeWindowingStrategy windowingStrategy,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, windowingStrategy, inputProperties, outputType, description);
+        super(
+                id,
+                context,
+                persistedConfig,
+                windowingStrategy,
+                inputProperties,
+                outputType,
+                description);
     }
 }

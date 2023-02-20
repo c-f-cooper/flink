@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * ResolvedCatalogBaseTable} can be temporary for one catalog, but permanent for another one.
  */
 @Internal
-public class ContextResolvedTable {
+public final class ContextResolvedTable {
 
     private static final AtomicInteger uniqueId = new AtomicInteger(0);
 
@@ -154,6 +154,15 @@ public class ContextResolvedTable {
                 objectIdentifier,
                 catalog,
                 ((ResolvedCatalogTable) resolvedTable).copy(newOptions),
+                false);
+    }
+
+    /** Copy the {@link ContextResolvedTable}, replacing the underlying {@link ResolvedSchema}. */
+    public ContextResolvedTable copy(ResolvedSchema newSchema) {
+        return new ContextResolvedTable(
+                objectIdentifier,
+                catalog,
+                new ResolvedCatalogTable((CatalogTable) resolvedTable.getOrigin(), newSchema),
                 false);
     }
 

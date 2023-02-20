@@ -134,6 +134,7 @@ public class CliFrontendParser {
 
     public static final Option SAVEPOINT_RESTORE_MODE =
             new Option(
+                    "rm",
                     "restoreMode",
                     true,
                     "Defines how should we restore from the given savepoint. Supported options: "
@@ -148,6 +149,7 @@ public class CliFrontendParser {
 
     static final Option SAVEPOINT_FORMAT_OPTION =
             new Option(
+                    "type",
                     "type",
                     true,
                     "Describes the binary format in which a savepoint should be taken. Supported"
@@ -263,8 +265,8 @@ public class CliFrontendParser {
                     true,
                     "Specify the path of the python interpreter used to execute the python UDF worker "
                             + "(e.g.: --pyExecutable /usr/local/bin/python3). "
-                            + "The python UDF worker depends on Python 3.6+, Apache Beam (version == 2.27.0), "
-                            + "Pip (version >= 7.1.0) and SetupTools (version >= 37.0.0). "
+                            + "The python UDF worker depends on Python 3.7+, Apache Beam (version == 2.43.0), "
+                            + "Pip (version >= 20.3) and SetupTools (version >= 37.0.0). "
                             + "Please ensure that the specified environment meets the above requirements.");
 
     public static final Option PYCLIENTEXEC_OPTION =
@@ -456,13 +458,15 @@ public class CliFrontendParser {
     }
 
     private static Options getStopOptionsWithoutDeprecatedOptions(Options options) {
-        return options.addOption(STOP_WITH_SAVEPOINT_PATH).addOption(STOP_AND_DRAIN);
+        return options.addOption(STOP_WITH_SAVEPOINT_PATH)
+                .addOption(STOP_AND_DRAIN)
+                .addOption(SAVEPOINT_FORMAT_OPTION);
     }
 
     private static Options getSavepointOptionsWithoutDeprecatedOptions(Options options) {
-        options.addOption(SAVEPOINT_DISPOSE_OPTION);
-        options.addOption(JAR_OPTION);
-        return options;
+        return options.addOption(SAVEPOINT_DISPOSE_OPTION)
+                .addOption(SAVEPOINT_FORMAT_OPTION)
+                .addOption(JAR_OPTION);
     }
 
     /** Prints the help for the client. */

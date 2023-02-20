@@ -25,6 +25,7 @@ import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.FileSystemFactory;
+import org.apache.flink.fs.s3.common.token.S3DelegationTokenReceiver;
 import org.apache.flink.fs.s3.common.writer.S3AccessHelper;
 import org.apache.flink.runtime.util.HadoopConfigLoader;
 import org.apache.flink.util.Preconditions;
@@ -123,6 +124,7 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
             // create the Hadoop FileSystem
             org.apache.hadoop.conf.Configuration hadoopConfig =
                     hadoopConfigLoader.getOrLoadHadoopConfig();
+            S3DelegationTokenReceiver.updateHadoopConfig(hadoopConfig);
             org.apache.hadoop.fs.FileSystem fs = createHadoopFileSystem();
             fs.initialize(getInitURI(fsUri, hadoopConfig), hadoopConfig);
 
@@ -152,7 +154,7 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
             final int maxConcurrentUploads = flinkConfig.getInteger(MAX_CONCURRENT_UPLOADS);
             final S3AccessHelper s3AccessHelper = getS3AccessHelper(fs);
 
-            return new FlinkS3FileSystem(
+            return createFlinkFileSystem(
                     fs,
                     localTmpDirectory,
                     entropyInjectionKey,
@@ -165,6 +167,24 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
         } catch (Exception e) {
             throw new IOException(e.getMessage(), e);
         }
+    }
+
+    protected FileSystem createFlinkFileSystem(
+            org.apache.hadoop.fs.FileSystem fs,
+            String localTmpDirectory,
+            String entropyInjectionKey,
+            int numEntropyChars,
+            S3AccessHelper s3AccessHelper,
+            long s3minPartSize,
+            int maxConcurrentUploads) {
+        return new FlinkS3FileSystem(
+                fs,
+                localTmpDirectory,
+                entropyInjectionKey,
+                numEntropyChars,
+                s3AccessHelper,
+                s3minPartSize,
+                maxConcurrentUploads);
     }
 
     protected abstract org.apache.hadoop.fs.FileSystem createHadoopFileSystem();

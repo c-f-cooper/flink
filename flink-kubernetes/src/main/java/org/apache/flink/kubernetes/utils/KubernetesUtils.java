@@ -37,6 +37,7 @@ import org.apache.flink.runtime.checkpoint.DefaultCompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.DefaultCompletedCheckpointStoreUtils;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.RestoreMode;
 import org.apache.flink.runtime.jobmanager.DefaultJobGraphStore;
 import org.apache.flink.runtime.jobmanager.JobGraphStore;
 import org.apache.flink.runtime.jobmanager.NoOpJobGraphStoreWatcher;
@@ -57,9 +58,11 @@ import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
 import io.fabric8.kubernetes.api.model.Container;
 import io.fabric8.kubernetes.api.model.ContainerBuilder;
 import io.fabric8.kubernetes.api.model.KubernetesResource;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.ResourceRequirements;
 import io.fabric8.kubernetes.api.model.ResourceRequirementsBuilder;
+import io.fabric8.kubernetes.api.model.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,6 +85,8 @@ import java.util.stream.Collectors;
 
 import static org.apache.flink.kubernetes.utils.Constants.CHECKPOINT_ID_KEY_PREFIX;
 import static org.apache.flink.kubernetes.utils.Constants.COMPLETED_CHECKPOINT_FILE_SUFFIX;
+import static org.apache.flink.kubernetes.utils.Constants.DNS_POLICY_DEFAULT;
+import static org.apache.flink.kubernetes.utils.Constants.DNS_POLICY_HOSTNETWORK;
 import static org.apache.flink.kubernetes.utils.Constants.JOB_GRAPH_STORE_KEY_PREFIX;
 import static org.apache.flink.kubernetes.utils.Constants.LABEL_CONFIGMAP_TYPE_HIGH_AVAILABILITY;
 import static org.apache.flink.kubernetes.utils.Constants.LEADER_ADDRESS_KEY;
@@ -296,6 +301,7 @@ public class KubernetesUtils {
      * @param lockIdentity lock identity to check the leadership
      * @param maxNumberOfCheckpointsToRetain max number of checkpoints to retain on state store
      *     handle
+     * @param restoreMode the mode in which the job is restoring
      * @return a {@link DefaultCompletedCheckpointStore} with {@link KubernetesStateHandleStore}.
      * @throws Exception when create the storage helper failed
      */
@@ -307,7 +313,8 @@ public class KubernetesUtils {
             @Nullable String lockIdentity,
             int maxNumberOfCheckpointsToRetain,
             SharedStateRegistryFactory sharedStateRegistryFactory,
-            Executor ioExecutor)
+            Executor ioExecutor,
+            RestoreMode restoreMode)
             throws Exception {
 
         final RetrievableStateStorageHelper<CompletedCheckpoint> stateStorage =
@@ -331,7 +338,7 @@ public class KubernetesUtils {
                 stateHandleStore,
                 KubernetesCheckpointStoreUtil.INSTANCE,
                 checkpoints,
-                sharedStateRegistryFactory.create(ioExecutor, checkpoints),
+                sharedStateRegistryFactory.create(ioExecutor, checkpoints, restoreMode),
                 executor);
     }
 
@@ -415,12 +422,18 @@ public class KubernetesUtils {
         final List<Container> otherContainers = new ArrayList<>();
         Container mainContainer = null;
 
-        for (Container container : pod.getInternalResource().getSpec().getContainers()) {
-            if (mainContainerName.equals(container.getName())) {
-                mainContainer = container;
-            } else {
-                otherContainers.add(container);
+        if (null != pod.getInternalResource().getSpec()) {
+            for (Container container : pod.getInternalResource().getSpec().getContainers()) {
+                if (mainContainerName.equals(container.getName())) {
+                    mainContainer = container;
+                } else {
+                    otherContainers.add(container);
+                }
             }
+            pod.getInternalResource().getSpec().setContainers(otherContainers);
+        } else {
+            // Set an empty spec for pod template
+            pod.getInternalResource().setSpec(new PodSpecBuilder().build());
         }
 
         if (mainContainer == null) {
@@ -430,7 +443,6 @@ public class KubernetesUtils {
             mainContainer = new ContainerBuilder().build();
         }
 
-        pod.getInternalResource().getSpec().setContainers(otherContainers);
         return new FlinkPod(pod.getInternalResource(), mainContainer);
     }
 
@@ -475,6 +487,24 @@ public class KubernetesUtils {
             resolvedValue = valueOfConfigOptionOrDefault;
         }
         return resolvedValue;
+    }
+
+    /**
+     * Resolve the DNS policy defined value. Return DNS_POLICY_HOSTNETWORK if host network enabled.
+     * If not, check whether there is a DNS policy overridden in pod template.
+     *
+     * @param dnsPolicy DNS policy defined in pod template spec
+     * @param hostNetworkEnabled Host network enabled or not
+     * @return the resolved value
+     */
+    public static String resolveDNSPolicy(String dnsPolicy, boolean hostNetworkEnabled) {
+        if (hostNetworkEnabled) {
+            return DNS_POLICY_HOSTNETWORK;
+        }
+        if (!StringUtils.isNullOrWhitespaceOnly(dnsPolicy)) {
+            return dnsPolicy;
+        }
+        return DNS_POLICY_DEFAULT;
     }
 
     /**
@@ -611,6 +641,11 @@ public class KubernetesUtils {
 
     public static String extractLeaderName(String key) {
         return key.substring(LEADER_PREFIX.length());
+    }
+
+    /** Generate namespaced name of the service. */
+    public static String getNamespacedServiceName(Service service) {
+        return service.getMetadata().getName() + "." + service.getMetadata().getNamespace();
     }
 
     private KubernetesUtils() {}

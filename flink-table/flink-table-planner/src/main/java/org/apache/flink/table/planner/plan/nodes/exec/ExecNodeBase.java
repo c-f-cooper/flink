@@ -18,20 +18,25 @@
 
 package org.apache.flink.table.planner.plan.nodes.exec;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.table.api.TableConfig;
-import org.apache.flink.table.api.config.OptimizerConfigOptions;
+import org.apache.flink.streaming.api.transformations.PartitionTransformation;
+import org.apache.flink.streaming.runtime.partitioner.GlobalPartitioner;
+import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.delegation.Planner;
 import org.apache.flink.table.planner.delegation.PlannerBase;
-import org.apache.flink.table.planner.plan.nodes.exec.common.CommonExecExchange;
+import org.apache.flink.table.planner.plan.nodes.exec.serde.ConfigurationJsonSerializerFilter;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.TransformationMetadata;
 import org.apache.flink.table.planner.plan.nodes.exec.visitor.ExecNodeVisitor;
 import org.apache.flink.table.planner.plan.utils.ExecNodeMetadataUtil;
 import org.apache.flink.table.types.logical.LogicalType;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JacksonInject;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnore;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.ArrayList;
@@ -47,6 +52,15 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public abstract class ExecNodeBase<T> implements ExecNode<T> {
+
+    /**
+     * The default value of this flag is false. Other cases must set this flag accordingly via
+     * {@link #setCompiled(boolean)}. It is not exposed via a constructor arg to avoid complex
+     * constructor overloading for all {@link ExecNode}s. However, during deserialization this flag
+     * will always be set to true.
+     */
+    @JacksonInject("isDeserialize")
+    private boolean isCompiled;
 
     private final String description;
 
@@ -71,13 +85,30 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
         return ExecNodeContext.newContext(this.getClass()).withId(getId());
     }
 
+    @JsonProperty(value = FIELD_NAME_CONFIGURATION, access = JsonProperty.Access.WRITE_ONLY)
+    private final ReadableConfig persistedConfig;
+
+    @JsonProperty(
+            value = FIELD_NAME_CONFIGURATION,
+            access = JsonProperty.Access.READ_ONLY,
+            index = 2)
+    // Custom filter to exclude node configuration if no consumed options are used
+    @JsonInclude(
+            value = JsonInclude.Include.CUSTOM,
+            valueFilter = ConfigurationJsonSerializerFilter.class)
+    public ReadableConfig getPersistedConfig() {
+        return persistedConfig;
+    }
+
     protected ExecNodeBase(
             int id,
             ExecNodeContext context,
+            ReadableConfig persistedConfig,
             List<InputProperty> inputProperties,
             LogicalType outputType,
             String description) {
         this.context = checkNotNull(context).withId(id);
+        this.persistedConfig = persistedConfig == null ? new Configuration() : persistedConfig;
         this.inputProperties = checkNotNull(inputProperties);
         this.outputType = checkNotNull(outputType);
         this.description = checkNotNull(description);
@@ -124,11 +155,17 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
     }
 
     @Override
-    public Transformation<T> translateToPlan(Planner planner) {
+    public final Transformation<T> translateToPlan(Planner planner) {
         if (transformation == null) {
-            transformation = translateToPlanInternal((PlannerBase) planner);
+            transformation =
+                    translateToPlanInternal(
+                            (PlannerBase) planner,
+                            ExecNodeConfig.of(
+                                    ((PlannerBase) planner).getTableConfig(),
+                                    persistedConfig,
+                                    isCompiled));
             if (this instanceof SingleTransformationTranslator) {
-                if (inputsContainSingleton()) {
+                if (inputsContainSingleton(transformation)) {
                     transformation.setParallelism(1);
                     transformation.setMaxParallelism(1);
                 }
@@ -137,26 +174,46 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
         return transformation;
     }
 
-    /** Internal method, translates this node into a Flink operator. */
-    protected abstract Transformation<T> translateToPlanInternal(PlannerBase planner);
-
     @Override
     public void accept(ExecNodeVisitor visitor) {
         visitor.visit(this);
     }
 
-    /** Whether there is singleton exchange node as input. */
+    @Override
+    public void setCompiled(boolean compiled) {
+        isCompiled = compiled;
+    }
+
+    /**
+     * Internal method, translates this node into a Flink operator.
+     *
+     * @param planner The planner.
+     * @param config per-{@link ExecNode} configuration that contains the merged configuration from
+     *     various layers which all the nodes implementing this method should use, instead of
+     *     retrieving configuration from the {@code planner}. For more details check {@link
+     *     ExecNodeConfig}.
+     */
+    protected abstract Transformation<T> translateToPlanInternal(
+            PlannerBase planner, ExecNodeConfig config);
+
+    private boolean inputsContainSingleton(Transformation<T> transformation) {
+        return inputsContainSingleton()
+                || transformation.getInputs().stream()
+                        .anyMatch(
+                                input ->
+                                        input instanceof PartitionTransformation
+                                                && ((PartitionTransformation<?>) input)
+                                                                .getPartitioner()
+                                                        instanceof GlobalPartitioner);
+    }
+
+    /** Whether singleton distribution is required. */
     protected boolean inputsContainSingleton() {
-        return getInputEdges().stream()
-                .map(ExecEdge::getSource)
+        return getInputProperties().stream()
                 .anyMatch(
-                        i ->
-                                i instanceof CommonExecExchange
-                                        && i.getInputProperties()
-                                                        .get(0)
-                                                        .getRequiredDistribution()
-                                                        .getType()
-                                                == InputProperty.DistributionType.SINGLETON);
+                        p ->
+                                p.getRequiredDistribution().getType()
+                                        == InputProperty.DistributionType.SINGLETON);
     }
 
     @JsonIgnore
@@ -164,20 +221,12 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
         return getClass().getSimpleName().replace("StreamExec", "").replace("BatchExec", "");
     }
 
-    protected String createTransformationUid(String operatorName) {
-        return context.generateUid(operatorName);
-    }
-
-    protected String createTransformationName(TableConfig config) {
-        return createTransformationName(config.getConfiguration());
+    protected String createTransformationUid(String operatorName, ExecNodeConfig config) {
+        return context.generateUid(operatorName, config);
     }
 
     protected String createTransformationName(ReadableConfig config) {
         return createFormattedTransformationName(getDescription(), getSimplifiedName(), config);
-    }
-
-    protected String createTransformationDescription(TableConfig config) {
-        return createTransformationDescription(config.getConfiguration());
     }
 
     protected String createTransformationDescription(ReadableConfig config) {
@@ -185,39 +234,33 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
     }
 
     protected TransformationMetadata createTransformationMeta(
-            String operatorName, TableConfig config) {
-        return createTransformationMeta(operatorName, config.getConfiguration());
-    }
-
-    protected TransformationMetadata createTransformationMeta(
-            String operatorName, ReadableConfig config) {
-        if (ExecNodeMetadataUtil.isUnsupported(this.getClass())) {
+            String operatorName, ExecNodeConfig config) {
+        if (ExecNodeMetadataUtil.isUnsupported(this.getClass()) || !config.shouldSetUid()) {
             return new TransformationMetadata(
                     createTransformationName(config), createTransformationDescription(config));
         } else {
-            // Only classes supporting metadata util need to set the uid
             return new TransformationMetadata(
-                    createTransformationUid(operatorName),
+                    createTransformationUid(operatorName, config),
                     createTransformationName(config),
                     createTransformationDescription(config));
         }
     }
 
     protected TransformationMetadata createTransformationMeta(
-            String operatorName, String detailName, String simplifiedName, ReadableConfig config) {
+            String operatorName, String detailName, String simplifiedName, ExecNodeConfig config) {
         final String name = createFormattedTransformationName(detailName, simplifiedName, config);
         final String desc = createFormattedTransformationDescription(detailName, config);
-        if (ExecNodeMetadataUtil.isUnsupported(this.getClass())) {
+        if (ExecNodeMetadataUtil.isUnsupported(this.getClass()) || !config.shouldSetUid()) {
             return new TransformationMetadata(name, desc);
         } else {
-            // Only classes supporting metadata util need to set the uid
-            return new TransformationMetadata(createTransformationUid(operatorName), name, desc);
+            return new TransformationMetadata(
+                    createTransformationUid(operatorName, config), name, desc);
         }
     }
 
     protected String createFormattedTransformationDescription(
             String description, ReadableConfig config) {
-        if (config.get(OptimizerConfigOptions.TABLE_OPTIMIZER_SIMPLIFY_OPERATOR_NAME_ENABLED)) {
+        if (config.get(ExecutionConfigOptions.TABLE_EXEC_SIMPLIFY_OPERATOR_NAME_ENABLED)) {
             return String.format("[%d]:%s", getId(), description);
         }
         return description;
@@ -225,9 +268,19 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
 
     protected String createFormattedTransformationName(
             String detailName, String simplifiedName, ReadableConfig config) {
-        if (config.get(OptimizerConfigOptions.TABLE_OPTIMIZER_SIMPLIFY_OPERATOR_NAME_ENABLED)) {
+        if (config.get(ExecutionConfigOptions.TABLE_EXEC_SIMPLIFY_OPERATOR_NAME_ENABLED)) {
             return String.format("%s[%d]", simplifiedName, getId());
         }
         return detailName;
+    }
+
+    public void resetTransformation() {
+        this.transformation = null;
+    }
+
+    @VisibleForTesting
+    @JsonIgnore
+    public Transformation<T> getTransformation() {
+        return this.transformation;
     }
 }

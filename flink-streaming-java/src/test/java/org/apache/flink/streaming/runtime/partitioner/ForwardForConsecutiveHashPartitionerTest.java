@@ -17,78 +17,68 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.graph.NonChainedOutput;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.graph.StreamEdge;
-import org.apache.flink.streaming.api.transformations.PartitionTransformation;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.streaming.api.transformations.StreamExchangeMode;
 
-import org.junit.Test;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-
 /** Test for {@link ForwardForConsecutiveHashPartitioner}. */
-public class ForwardForConsecutiveHashPartitionerTest extends TestLogger {
+class ForwardForConsecutiveHashPartitionerTest {
 
     @Test
-    public void testConvertToForwardPartitioner() {
-        JobGraph jobGraph = createJobGraph("group1", "group1");
+    void testConvertToForwardPartitioner() {
+        testConvertToForwardPartitioner(StreamExchangeMode.BATCH);
+        testConvertToForwardPartitioner(StreamExchangeMode.PIPELINED);
+        testConvertToForwardPartitioner(StreamExchangeMode.UNDEFINED);
+    }
+
+    private void testConvertToForwardPartitioner(StreamExchangeMode streamExchangeMode) {
+        JobGraph jobGraph =
+                StreamPartitionerTestUtils.createJobGraph(
+                        "group1",
+                        "group1",
+                        new ForwardForConsecutiveHashPartitioner<>(
+                                new KeyGroupStreamPartitioner<>(record -> 0L, 100)),
+                        streamExchangeMode);
         List<JobVertex> jobVertices = jobGraph.getVerticesSortedTopologicallyFromSources();
-        assertThat(jobVertices.size(), is(1));
+        Assertions.assertThat(jobVertices.size()).isEqualTo(1);
         JobVertex vertex = jobGraph.getVerticesSortedTopologicallyFromSources().get(0);
 
         StreamConfig sourceConfig = new StreamConfig(vertex.getConfiguration());
         StreamEdge edge = sourceConfig.getChainedOutputs(getClass().getClassLoader()).get(0);
-        assertThat(edge.getPartitioner(), instanceOf(ForwardPartitioner.class));
+        Assertions.assertThat(edge.getPartitioner()).isInstanceOf(ForwardPartitioner.class);
     }
 
     @Test
-    public void testConvertToHashPartitioner() {
-        JobGraph jobGraph = createJobGraph("group1", "group2");
+    void testConvertToHashPartitioner() {
+        testConvertToHashPartitioner(StreamExchangeMode.BATCH);
+        testConvertToHashPartitioner(StreamExchangeMode.PIPELINED);
+        testConvertToHashPartitioner(StreamExchangeMode.UNDEFINED);
+    }
+
+    private void testConvertToHashPartitioner(StreamExchangeMode streamExchangeMode) {
+        JobGraph jobGraph =
+                StreamPartitionerTestUtils.createJobGraph(
+                        "group1",
+                        "group2",
+                        new ForwardForConsecutiveHashPartitioner<>(
+                                new KeyGroupStreamPartitioner<>(record -> 0L, 100)),
+                        streamExchangeMode);
         List<JobVertex> jobVertices = jobGraph.getVerticesSortedTopologicallyFromSources();
-        assertThat(jobVertices.size(), is(2));
+        Assertions.assertThat(jobVertices.size()).isEqualTo(2);
         JobVertex sourceVertex = jobGraph.getVerticesSortedTopologicallyFromSources().get(0);
 
         StreamConfig sourceConfig = new StreamConfig(sourceVertex.getConfiguration());
-        StreamEdge edge = sourceConfig.getNonChainedOutputs(getClass().getClassLoader()).get(0);
-        assertThat(edge.getPartitioner(), instanceOf(KeyGroupStreamPartitioner.class));
-    }
-
-    private JobGraph createJobGraph(String sourceSlotSharingGroup, String sinkSlotSharingGroup) {
-
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
-        env.getConfig().setDynamicGraph(true);
-
-        final DataStream<Long> source =
-                env.fromSequence(0, 99).slotSharingGroup(sourceSlotSharingGroup).name("source");
-
-        setForwardForConsecutiveHashPartitioner(
-                        source,
-                        new ForwardForConsecutiveHashPartitioner<>(
-                                new KeyGroupStreamPartitioner<>(record -> 0L, 100)))
-                .addSink(new DiscardingSink<>())
-                .slotSharingGroup(sinkSlotSharingGroup)
-                .name("sink");
-
-        return env.getStreamGraph().getJobGraph();
-    }
-
-    private <T> DataStream<T> setForwardForConsecutiveHashPartitioner(
-            DataStream<T> dataStream,
-            ForwardForConsecutiveHashPartitioner<T> forwardForConsecutiveHashPartitioner) {
-        return new DataStream<T>(
-                dataStream.getExecutionEnvironment(),
-                new PartitionTransformation<T>(
-                        dataStream.getTransformation(), forwardForConsecutiveHashPartitioner));
+        NonChainedOutput output =
+                sourceConfig.getOperatorNonChainedOutputs(getClass().getClassLoader()).get(0);
+        Assertions.assertThat(output.getPartitioner())
+                .isInstanceOf(KeyGroupStreamPartitioner.class);
     }
 }

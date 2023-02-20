@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeMetadata;
@@ -41,12 +42,13 @@ import java.util.List;
         name = "stream-exec-python-correlate",
         version = 1,
         producedTransformations = CommonExecPythonCorrelate.PYTHON_CORRELATE_TRANSFORMATION,
-        minPlanVersion = FlinkVersion.v1_15,
-        minStateVersion = FlinkVersion.v1_15)
+        minPlanVersion = FlinkVersion.v1_16,
+        minStateVersion = FlinkVersion.v1_16)
 public class StreamExecPythonCorrelate extends CommonExecPythonCorrelate
         implements StreamExecNode<RowData> {
 
     public StreamExecPythonCorrelate(
+            ReadableConfig tableConfig,
             FlinkJoinType joinType,
             RexCall invocation,
             InputProperty inputProperty,
@@ -55,6 +57,7 @@ public class StreamExecPythonCorrelate extends CommonExecPythonCorrelate
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecPythonCorrelate.class),
+                ExecNodeContext.newPersistedConfig(StreamExecPythonCorrelate.class, tableConfig),
                 joinType,
                 invocation,
                 Collections.singletonList(inputProperty),
@@ -66,6 +69,7 @@ public class StreamExecPythonCorrelate extends CommonExecPythonCorrelate
     public StreamExecPythonCorrelate(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_JOIN_TYPE) FlinkJoinType joinType,
             @JsonProperty(FIELD_NAME_FUNCTION_CALL) RexNode invocation,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
@@ -74,6 +78,7 @@ public class StreamExecPythonCorrelate extends CommonExecPythonCorrelate
         super(
                 id,
                 context,
+                persistedConfig,
                 joinType,
                 (RexCall) invocation,
                 inputProperties,

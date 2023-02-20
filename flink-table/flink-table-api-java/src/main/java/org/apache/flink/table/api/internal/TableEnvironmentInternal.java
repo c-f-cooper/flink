@@ -22,8 +22,11 @@ import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.CompiledPlan;
 import org.apache.flink.table.api.ExplainDetail;
+import org.apache.flink.table.api.ExplainFormat;
+import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.catalog.CatalogManager;
+import org.apache.flink.table.delegation.InternalPlan;
 import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.table.operations.ModifyOperation;
 import org.apache.flink.table.operations.Operation;
@@ -58,6 +61,14 @@ public interface TableEnvironmentInternal extends TableEnvironment {
     OperationTreeBuilder getOperationTreeBuilder();
 
     /**
+     * Creates a table from a table source.
+     *
+     * @param source table source used as table
+     */
+    @Deprecated
+    Table fromTableSource(TableSource<?> source);
+
+    /**
      * Execute the given modify operations and return the execution result.
      *
      * @param operations The operations to be executed.
@@ -81,7 +92,21 @@ public interface TableEnvironmentInternal extends TableEnvironment {
      *     estimated cost, changelog mode for streaming
      * @return AST and the execution plan.
      */
-    String explainInternal(List<Operation> operations, ExplainDetail... extraDetails);
+    default String explainInternal(List<Operation> operations, ExplainDetail... extraDetails) {
+        return explainInternal(operations, ExplainFormat.TEXT, extraDetails);
+    }
+
+    /**
+     * Returns the AST of this table and the execution plan to compute the result of this table.
+     *
+     * @param operations The operations to be explained.
+     * @param format The output format.
+     * @param extraDetails The extra explain details which the explain result should include, e.g.
+     *     estimated cost, changelog mode for streaming
+     * @return AST and the execution plan.
+     */
+    String explainInternal(
+            List<Operation> operations, ExplainFormat format, ExplainDetail... extraDetails);
 
     /**
      * Registers an external {@link TableSource} in this {@link TableEnvironment}'s catalog.
@@ -110,11 +135,12 @@ public interface TableEnvironmentInternal extends TableEnvironment {
      */
     void registerTableSinkInternal(String name, TableSink<?> configuredSink);
 
-    /**
-     * Compile a plan staring from a list of operations.
-     *
-     * <p><b>Note:</b> This API is <b>experimental</b> and subject to change in future releases.
-     */
     @Experimental
     CompiledPlan compilePlan(List<ModifyOperation> operations);
+
+    @Experimental
+    TableResultInternal executePlan(InternalPlan plan);
+
+    @Experimental
+    String explainPlan(InternalPlan compiledPlan, ExplainDetail... extraDetails);
 }

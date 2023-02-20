@@ -26,18 +26,18 @@ import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.connector.file.src.FileSource;
 import org.apache.flink.connector.file.src.reader.StreamFormat;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.core.testutils.AllCallbackWrapper;
 import org.apache.flink.formats.common.Converter;
 import org.apache.flink.runtime.minicluster.RpcServiceSharing;
-import org.apache.flink.runtime.testutils.MiniClusterExtension;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.BasePathBucketAssigner;
 import org.apache.flink.streaming.api.operators.collect.ClientAndIterator;
+import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.function.FunctionWithException;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.dataformat.csv.CsvMapper;
@@ -75,10 +75,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith({TestLoggerExtension.class})
 public class DataStreamCsvITCase {
 
+    private static final CsvMapper CSV_MAPPER = JacksonMapperFactory.createCsvMapper();
+
     private static final int PARALLELISM = 4;
 
     @TempDir File outDir;
 
+    @RegisterExtension
     private static final MiniClusterExtension MINI_CLUSTER_RESOURCE =
             new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
@@ -87,10 +90,6 @@ public class DataStreamCsvITCase {
                             .setRpcServiceSharing(RpcServiceSharing.DEDICATED)
                             .withHaLeadershipControl()
                             .build());
-
-    @RegisterExtension
-    private static AllCallbackWrapper<MiniClusterExtension> allCallbackWrapper =
-            new AllCallbackWrapper<>(MINI_CLUSTER_RESOURCE);
 
     // ------------------------------------------------------------------------
     //  test data
@@ -165,12 +164,14 @@ public class DataStreamCsvITCase {
     public void testCsvReaderFormatFromSchema() throws Exception {
         writeFile(outDir, "data.csv", CSV_LINES_PIPE_SEPARATED);
 
-        CsvMapper mapper = new CsvMapper();
-        CsvSchema schema =
-                mapper.schemaFor(CityPojo.class).withoutQuoteChar().withColumnSeparator('|');
-
         final CsvReaderFormat<CityPojo> csvFormat =
-                CsvReaderFormat.forSchema(mapper, schema, TypeInformation.of(CityPojo.class));
+                CsvReaderFormat.forSchema(
+                        () -> CSV_MAPPER,
+                        mapper ->
+                                mapper.schemaFor(CityPojo.class)
+                                        .withoutQuoteChar()
+                                        .withColumnSeparator('|'),
+                        TypeInformation.of(CityPojo.class));
         final List<CityPojo> result = initializeSourceAndReadData(outDir, csvFormat);
 
         assertThat(Arrays.asList(POJOS)).isEqualTo(result);
@@ -231,9 +232,8 @@ public class DataStreamCsvITCase {
 
     private static <T> BulkWriter.Factory<T> factoryForPojo(Class<T> pojoClass) {
         final Converter<T, T, Void> converter = (value, context) -> value;
-        final CsvMapper csvMapper = new CsvMapper();
-        final CsvSchema schema = csvMapper.schemaFor(pojoClass).withoutQuoteChar();
-        return (out) -> new CsvBulkWriter<>(csvMapper, schema, converter, null, out);
+        final CsvSchema schema = CSV_MAPPER.schemaFor(pojoClass).withoutQuoteChar();
+        return (out) -> new CsvBulkWriter<>(CSV_MAPPER, schema, converter, null, out);
     }
 
     private static Map<File, String> getFileContentByPath(File directory) throws IOException {

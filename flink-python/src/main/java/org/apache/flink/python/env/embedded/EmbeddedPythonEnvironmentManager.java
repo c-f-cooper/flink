@@ -53,9 +53,7 @@ public class EmbeddedPythonEnvironmentManager extends AbstractPythonEnvironmentM
 
         String executionMode = dependencyInfo.getExecutionMode();
 
-        if (executionMode.equalsIgnoreCase("sub-interpreter")) {
-            execType = PythonInterpreterConfig.ExecType.SUB_INTERPRETER;
-        } else if (executionMode.equalsIgnoreCase("multi-thread")) {
+        if (executionMode.equalsIgnoreCase("thread")) {
             execType = PythonInterpreterConfig.ExecType.MULTI_THREAD;
         } else {
             throw new RuntimeException(

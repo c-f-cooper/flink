@@ -39,13 +39,15 @@ under the License.
 
  * [Apache Kafka]({{< ref "docs/connectors/datastream/kafka" >}}) (source/sink)
  * [Apache Cassandra]({{< ref "docs/connectors/datastream/cassandra" >}}) (sink)
- * [Amazon Kinesis Streams]({{< ref "docs/connectors/datastream/kinesis" >}}) (source/sink)
+ * [Amazon DynamoDB]({{< ref "docs/connectors/datastream/dynamodb" >}}) (sink)
+ * [Amazon Kinesis Data Streams]({{< ref "docs/connectors/datastream/kinesis" >}}) (source/sink)
+ * [Amazon Kinesis Data Firehose]({{< ref "docs/connectors/datastream/firehose" >}}) (sink)
+ * [DataGen]({{< ref "docs/connectors/datastream/datagen" >}}) (source)
  * [Elasticsearch]({{< ref "docs/connectors/datastream/elasticsearch" >}}) (sink)
  * [FileSystem]({{< ref "docs/connectors/datastream/filesystem" >}}) (sink)
  * [RabbitMQ]({{< ref "docs/connectors/datastream/rabbitmq" >}}) (source/sink)
  * [Google PubSub]({{< ref "docs/connectors/datastream/pubsub" >}}) (source/sink)
  * [Hybrid Source]({{< ref "docs/connectors/datastream/hybridsource" >}}) (source)
- * [Apache NiFi]({{< ref "docs/connectors/datastream/nifi" >}}) (source/sink)
  * [Apache Pulsar]({{< ref "docs/connectors/datastream/pulsar" >}}) (source)
  * [JDBC]({{< ref "docs/connectors/datastream/jdbc" >}}) (sink)
 

@@ -19,13 +19,16 @@
 package org.apache.flink.table.planner.plan.nodes.exec.batch;
 
 import org.apache.flink.api.dag.Transformation;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.delegation.PlannerBase;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeBase;
+import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeConfig;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
+import org.apache.flink.table.planner.plan.nodes.exec.SingleTransformationTranslator;
 import org.apache.flink.table.planner.plan.nodes.exec.utils.ExecNodeUtil;
 import org.apache.flink.table.runtime.operators.sort.LimitOperator;
 import org.apache.flink.table.types.logical.LogicalType;
@@ -33,13 +36,15 @@ import org.apache.flink.table.types.logical.LogicalType;
 import java.util.Collections;
 
 /** Batch {@link ExecNode} for Limit. */
-public class BatchExecLimit extends ExecNodeBase<RowData> implements BatchExecNode<RowData> {
+public class BatchExecLimit extends ExecNodeBase<RowData>
+        implements BatchExecNode<RowData>, SingleTransformationTranslator<RowData> {
 
     private final long limitStart;
     private final long limitEnd;
     private final boolean isGlobal;
 
     public BatchExecLimit(
+            ReadableConfig tableConfig,
             long limitStart,
             long limitEnd,
             boolean isGlobal,
@@ -49,6 +54,7 @@ public class BatchExecLimit extends ExecNodeBase<RowData> implements BatchExecNo
         super(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(BatchExecLimit.class),
+                ExecNodeContext.newPersistedConfig(BatchExecLimit.class, tableConfig),
                 Collections.singletonList(inputProperty),
                 outputType,
                 description);
@@ -59,16 +65,18 @@ public class BatchExecLimit extends ExecNodeBase<RowData> implements BatchExecNo
 
     @SuppressWarnings("unchecked")
     @Override
-    protected Transformation<RowData> translateToPlanInternal(PlannerBase planner) {
+    protected Transformation<RowData> translateToPlanInternal(
+            PlannerBase planner, ExecNodeConfig config) {
         Transformation<RowData> inputTransform =
                 (Transformation<RowData>) getInputEdges().get(0).translateToPlan(planner);
         LimitOperator operator = new LimitOperator(isGlobal, limitStart, limitEnd);
         return ExecNodeUtil.createOneInputTransformation(
                 inputTransform,
-                createTransformationName(planner.getTableConfig()),
-                createTransformationDescription(planner.getTableConfig()),
+                createTransformationName(config),
+                createTransformationDescription(config),
                 SimpleOperatorFactory.of(operator),
                 inputTransform.getOutputType(),
-                inputTransform.getParallelism());
+                inputTransform.getParallelism(),
+                false);
     }
 }

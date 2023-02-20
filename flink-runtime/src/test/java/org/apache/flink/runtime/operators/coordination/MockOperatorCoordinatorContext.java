@@ -18,7 +18,12 @@ limitations under the License.
 
 package org.apache.flink.runtime.operators.coordination;
 
+import org.apache.flink.metrics.groups.OperatorCoordinatorMetricGroup;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.metrics.groups.InternalOperatorCoordinatorMetricGroup;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
+
+import java.util.concurrent.CompletableFuture;
 
 /** A simple implementation of {@link OperatorCoordinator.Context} for testing purposes. */
 public class MockOperatorCoordinatorContext implements OperatorCoordinator.Context {
@@ -30,6 +35,7 @@ public class MockOperatorCoordinatorContext implements OperatorCoordinator.Conte
 
     private boolean jobFailed;
     private Throwable jobFailureReason;
+    private final CompletableFuture<Void> jobFailedFuture = new CompletableFuture<>();
 
     public MockOperatorCoordinatorContext(OperatorID operatorID, int numSubtasks) {
         this(operatorID, numSubtasks, MockOperatorCoordinatorContext.class.getClassLoader());
@@ -54,9 +60,16 @@ public class MockOperatorCoordinatorContext implements OperatorCoordinator.Conte
     }
 
     @Override
+    public OperatorCoordinatorMetricGroup metricGroup() {
+        return new InternalOperatorCoordinatorMetricGroup(
+                UnregisteredMetricGroups.createUnregisteredJobManagerOperatorMetricGroup());
+    }
+
+    @Override
     public void failJob(Throwable cause) {
         jobFailed = true;
         jobFailureReason = cause;
+        jobFailedFuture.complete(null);
     }
 
     @Override
@@ -74,6 +87,11 @@ public class MockOperatorCoordinatorContext implements OperatorCoordinator.Conte
         return coordinatorStore;
     }
 
+    @Override
+    public boolean isConcurrentExecutionAttemptsSupported() {
+        return false;
+    }
+
     // -------------------------------
 
     public boolean isJobFailed() {
@@ -82,5 +100,9 @@ public class MockOperatorCoordinatorContext implements OperatorCoordinator.Conte
 
     public Throwable getJobFailureReason() {
         return jobFailureReason;
+    }
+
+    public CompletableFuture<Void> getJobFailedFuture() {
+        return jobFailedFuture;
     }
 }

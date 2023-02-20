@@ -23,8 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-filesystems</artifactId>
-		<version>1.15-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>1.18-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-gs-fs-hadoop</artifactId>
@@ -144,6 +143,16 @@ under the License.
 				<groupId>org.apache.hadoop</groupId>
 				<artifactId>hadoop-common</artifactId>
 				<version>${fs.hadoopshaded.version}</version>
+				<exclusions>
+					<exclusion>
+						<groupId>ch.qos.reload4j</groupId>
+						<artifactId>reload4j</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>org.slf4j</groupId>
+						<artifactId>slf4j-reload4j</artifactId>
+					</exclusion>
+				</exclusions>
 			</dependency>
 
 			<!-- Force grpc dependencies to the same version -->
@@ -173,7 +182,6 @@ under the License.
 							<goal>shade</goal>
 						</goals>
 						<configuration>
-							<shadeTestJar>false</shadeTestJar>
 							<artifactSet>
 								<includes>
 									<include>*:*</include>
@@ -216,9 +224,6 @@ under the License.
 										<exclude>META-INF/maven/**</exclude>
 										<exclude>META-INF/NOTICE.txt</exclude>
 										<exclude>META-INF/LICENSE.txt</exclude>
-										<exclude>META-INF/*.SF</exclude>
-										<exclude>META-INF/*.DSA</exclude>
-										<exclude>META-INF/*.RSA</exclude>
 									</excludes>
 								</filter>
 							</filters>

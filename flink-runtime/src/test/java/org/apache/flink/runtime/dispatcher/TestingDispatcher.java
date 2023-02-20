@@ -28,6 +28,7 @@ import org.apache.flink.runtime.dispatcher.cleanup.ResourceCleanerFactory;
 import org.apache.flink.runtime.dispatcher.cleanup.TestingCleanupRunnerFactory;
 import org.apache.flink.runtime.dispatcher.cleanup.TestingRetryStrategies;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
+import org.apache.flink.runtime.heartbeat.HeartbeatServicesImpl;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
@@ -41,17 +42,19 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
 import org.apache.flink.runtime.resourcemanager.utils.TestingResourceManagerGateway;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
-import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.util.TestingFatalErrorHandler;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
+import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.TimeUtils;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -62,25 +65,6 @@ import java.util.function.Function;
 class TestingDispatcher extends Dispatcher {
 
     private final CompletableFuture<Void> startFuture;
-
-    TestingDispatcher(
-            RpcService rpcService,
-            DispatcherId fencingToken,
-            Collection<JobGraph> recoveredJobs,
-            Collection<JobResult> recoveredDirtyJobResults,
-            DispatcherBootstrapFactory dispatcherBootstrapFactory,
-            DispatcherServices dispatcherServices)
-            throws Exception {
-        super(
-                rpcService,
-                fencingToken,
-                recoveredJobs,
-                recoveredDirtyJobResults,
-                dispatcherBootstrapFactory,
-                dispatcherServices);
-
-        this.startFuture = new CompletableFuture<>();
-    }
 
     private TestingDispatcher(
             RpcService rpcService,
@@ -159,13 +143,17 @@ class TestingDispatcher extends Dispatcher {
                 });
     }
 
+    <T> CompletableFuture<T> callAsyncInMainThread(Callable<CompletableFuture<T>> callable) {
+        return callAsync(callable, TestingUtils.TESTING_DURATION).thenCompose(Function.identity());
+    }
+
     CompletableFuture<Void> getJobTerminationFuture(@Nonnull JobID jobId, @Nonnull Time timeout) {
-        return callAsyncWithoutFencing(() -> getJobTerminationFuture(jobId), timeout)
+        return callAsync(() -> getJobTerminationFuture(jobId), TimeUtils.toDuration(timeout))
                 .thenCompose(Function.identity());
     }
 
     CompletableFuture<Integer> getNumberJobs(Time timeout) {
-        return callAsyncWithoutFencing(() -> listJobs(timeout).get().size(), timeout);
+        return callAsync(() -> listJobs(timeout).get().size(), TimeUtils.toDuration(timeout));
     }
 
     void waitUntilStarted() {
@@ -177,10 +165,9 @@ class TestingDispatcher extends Dispatcher {
     }
 
     public static class Builder {
-        private RpcService rpcService = new TestingRpcService();
         private DispatcherId fencingToken = DispatcherId.generate();
         private Collection<JobGraph> recoveredJobs = Collections.emptyList();
-        private Collection<JobResult> recoveredDirtyJobs = Collections.emptyList();
+        @Nullable private Collection<JobResult> recoveredDirtyJobs = null;
         private HighAvailabilityServices highAvailabilityServices =
                 new TestingHighAvailabilityServices();
 
@@ -188,7 +175,7 @@ class TestingDispatcher extends Dispatcher {
                 new TestingResourceManagerGateway();
         private GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever =
                 () -> CompletableFuture.completedFuture(resourceManagerGateway);
-        private HeartbeatServices heartbeatServices = new HeartbeatServices(1000L, 1000L);
+        private HeartbeatServices heartbeatServices = new HeartbeatServicesImpl(1000L, 1000L);
 
         private JobGraphWriter jobGraphWriter = NoOpJobGraphWriter.INSTANCE;
         private JobResultStore jobResultStore = new EmbeddedJobResultStore();
@@ -217,11 +204,6 @@ class TestingDispatcher extends Dispatcher {
                 new DefaultJobManagerRunnerRegistry(1);
         @Nullable private ResourceCleanerFactory resourceCleanerFactory;
 
-        public Builder setRpcService(RpcService rpcService) {
-            this.rpcService = rpcService;
-            return this;
-        }
-
         public Builder setFencingToken(DispatcherId fencingToken) {
             this.fencingToken = fencingToken;
             return this;
@@ -232,7 +214,7 @@ class TestingDispatcher extends Dispatcher {
             return this;
         }
 
-        public Builder setRecoveredDirtyJobs(Collection<JobResult> recoveredDirtyJobs) {
+        public Builder setRecoveredDirtyJobs(@Nullable Collection<JobResult> recoveredDirtyJobs) {
             this.recoveredDirtyJobs = recoveredDirtyJobs;
             return this;
         }
@@ -354,12 +336,14 @@ class TestingDispatcher extends Dispatcher {
                     jobManagerMetricGroup);
         }
 
-        public TestingDispatcher build() throws Exception {
+        public TestingDispatcher build(RpcService rpcService) throws Exception {
             return new TestingDispatcher(
                     rpcService,
                     fencingToken,
                     recoveredJobs,
-                    recoveredDirtyJobs,
+                    recoveredDirtyJobs == null
+                            ? jobResultStore.getDirtyResults()
+                            : recoveredDirtyJobs,
                     configuration,
                     highAvailabilityServices,
                     resourceManagerGatewayRetriever,

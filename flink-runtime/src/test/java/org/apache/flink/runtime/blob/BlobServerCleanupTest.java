@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.blob;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.Configuration;
@@ -37,7 +36,6 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -259,10 +257,13 @@ public class BlobServerCleanupTest extends TestLogger {
         testFailedCleanup(
                 new JobID(),
                 (testInstance, jobId, executor) ->
-                        assertThat(testInstance.globalCleanupAsync(new JobID(), executor))
-                                .failsWithin(Duration.ofMillis(100))
-                                .withThrowableOfType(ExecutionException.class)
-                                .withCauseInstanceOf(IOException.class),
+                        assertThatThrownBy(
+                                        () ->
+                                                testInstance
+                                                        .globalCleanupAsync(new JobID(), executor)
+                                                        .get())
+                                .isInstanceOf(ExecutionException.class)
+                                .hasCauseInstanceOf(IOException.class),
                 blobStore);
     }
 
@@ -280,10 +281,13 @@ public class BlobServerCleanupTest extends TestLogger {
         testFailedCleanup(
                 new JobID(),
                 (testInstance, jobId, executor) ->
-                        assertThat(testInstance.globalCleanupAsync(new JobID(), executor))
-                                .failsWithin(Duration.ofMillis(100))
-                                .withThrowableOfType(ExecutionException.class)
-                                .withCause(actualException),
+                        assertThatThrownBy(
+                                        () ->
+                                                testInstance
+                                                        .globalCleanupAsync(new JobID(), executor)
+                                                        .get())
+                                .isInstanceOf(ExecutionException.class)
+                                .hasCause(actualException),
                 blobStore);
     }
 
@@ -380,10 +384,7 @@ public class BlobServerCleanupTest extends TestLogger {
 
         try (final BlobServer blobServer =
                 createTestInstance(temporaryFolder.getAbsolutePath(), cleanupInterval)) {
-            CommonTestUtils.waitUntilCondition(
-                    () -> !blob.exists(),
-                    Deadline.fromNow(Duration.ofSeconds(cleanupInterval * 5L)),
-                    "The transient blob has not been cleaned up automatically.");
+            CommonTestUtils.waitUntilCondition(() -> !blob.exists());
         }
     }
 

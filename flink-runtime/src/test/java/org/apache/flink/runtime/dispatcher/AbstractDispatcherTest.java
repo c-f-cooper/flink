@@ -19,7 +19,6 @@ package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.blob.BlobServer;
@@ -27,6 +26,7 @@ import org.apache.flink.runtime.blob.VoidBlobStore;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointRecoveryFactory;
 import org.apache.flink.runtime.dispatcher.cleanup.CheckpointResourcesCleanupRunnerFactory;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
+import org.apache.flink.runtime.heartbeat.HeartbeatServicesImpl;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedJobResultStore;
 import org.apache.flink.runtime.jobmanager.StandaloneJobGraphStore;
@@ -36,7 +36,6 @@ import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.runtime.util.TestingFatalErrorHandlerResource;
 import org.apache.flink.util.TestLogger;
-import org.apache.flink.util.TimeUtils;
 
 import org.junit.After;
 import org.junit.AfterClass;
@@ -61,7 +60,7 @@ public class AbstractDispatcherTest extends TestLogger {
     @AfterClass
     public static void teardownClass() throws Exception {
         if (rpcService != null) {
-            RpcUtils.terminateRpcService(rpcService, TIMEOUT);
+            RpcUtils.terminateRpcService(rpcService);
             rpcService = null;
         }
     }
@@ -69,8 +68,7 @@ public class AbstractDispatcherTest extends TestLogger {
     static void awaitStatus(DispatcherGateway dispatcherGateway, JobID jobId, JobStatus status)
             throws Exception {
         CommonTestUtils.waitUntilCondition(
-                () -> status.equals(dispatcherGateway.requestJobStatus(jobId, TIMEOUT).get()),
-                Deadline.fromNow(TimeUtils.toDuration(TIMEOUT)));
+                () -> status.equals(dispatcherGateway.requestJobStatus(jobId, TIMEOUT).get()));
     }
 
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -91,7 +89,7 @@ public class AbstractDispatcherTest extends TestLogger {
 
     @Before
     public void setUp() throws Exception {
-        heartbeatServices = new HeartbeatServices(1000L, 10000L);
+        heartbeatServices = new HeartbeatServicesImpl(1000L, 10000L);
 
         haServices = new TestingHighAvailabilityServices();
         haServices.setCheckpointRecoveryFactory(new StandaloneCheckpointRecoveryFactory());
@@ -106,7 +104,6 @@ public class AbstractDispatcherTest extends TestLogger {
 
     protected TestingDispatcher.Builder createTestingDispatcherBuilder() {
         return TestingDispatcher.builder()
-                .setRpcService(rpcService)
                 .setConfiguration(configuration)
                 .setHeartbeatServices(heartbeatServices)
                 .setHighAvailabilityServices(haServices)

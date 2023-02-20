@@ -21,6 +21,7 @@ package org.apache.flink.runtime.jobmaster;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.runtime.dispatcher.JobCancellationFailedException;
 import org.apache.flink.runtime.execution.librarycache.LibraryCacheManager;
 import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.jobmaster.factories.JobMasterServiceProcessFactory;
@@ -123,40 +124,40 @@ public class JobMasterServiceLeadershipRunner implements JobManagerRunner, Leade
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        final CompletableFuture<Void> processTerminationFuture;
         synchronized (lock) {
-            if (state != State.STOPPED) {
-                state = State.STOPPED;
-
-                LOG.debug("Terminating the leadership runner for job {}.", getJobID());
-
-                jobMasterGatewayFuture.completeExceptionally(
-                        new FlinkException(
-                                "JobMasterServiceLeadershipRunner is closed. Therefore, the corresponding JobMaster will never acquire the leadership."));
-                resultFuture.complete(
-                        JobManagerRunnerResult.forSuccess(
-                                createExecutionGraphInfoWithJobStatus(JobStatus.SUSPENDED)));
-
-                final CompletableFuture<Void> processTerminationFuture =
-                        jobMasterServiceProcess.closeAsync();
-
-                final CompletableFuture<Void> serviceTerminationFuture =
-                        FutureUtils.runAfterwards(
-                                processTerminationFuture,
-                                () -> {
-                                    classLoaderLease.release();
-                                    leaderElectionService.stop();
-                                });
-
-                FutureUtils.forward(serviceTerminationFuture, terminationFuture);
-
-                terminationFuture.whenComplete(
-                        (unused, throwable) ->
-                                LOG.debug(
-                                        "Leadership runner for job {} has been terminated.",
-                                        getJobID()));
+            if (state == State.STOPPED) {
+                return terminationFuture;
             }
+
+            state = State.STOPPED;
+
+            LOG.debug("Terminating the leadership runner for job {}.", getJobID());
+
+            jobMasterGatewayFuture.completeExceptionally(
+                    new FlinkException(
+                            "JobMasterServiceLeadershipRunner is closed. Therefore, the corresponding JobMaster will never acquire the leadership."));
+
+            resultFuture.complete(
+                    JobManagerRunnerResult.forSuccess(
+                            createExecutionGraphInfoWithJobStatus(JobStatus.SUSPENDED)));
+
+            processTerminationFuture = jobMasterServiceProcess.closeAsync();
         }
 
+        final CompletableFuture<Void> serviceTerminationFuture =
+                FutureUtils.runAfterwards(
+                        processTerminationFuture,
+                        () -> {
+                            classLoaderLease.release();
+                            leaderElectionService.stop();
+                        });
+
+        FutureUtils.forward(serviceTerminationFuture, terminationFuture);
+
+        terminationFuture.whenComplete(
+                (unused, throwable) ->
+                        LOG.debug("Leadership runner for job {} has been terminated.", getJobID()));
         return terminationFuture;
     }
 
@@ -192,7 +193,7 @@ public class JobMasterServiceLeadershipRunner implements JobManagerRunner, Leade
                     .exceptionally(
                             e -> {
                                 throw new CompletionException(
-                                        new FlinkException(
+                                        new JobCancellationFailedException(
                                                 "Cancellation failed.",
                                                 ExceptionUtils.stripCompletionException(e)));
                             });

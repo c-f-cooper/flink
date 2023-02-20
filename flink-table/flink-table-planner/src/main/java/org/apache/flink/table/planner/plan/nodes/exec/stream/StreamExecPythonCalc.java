@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
 import org.apache.flink.FlinkVersion;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
@@ -40,11 +41,12 @@ import java.util.List;
         name = "stream-exec-python-calc",
         version = 1,
         producedTransformations = CommonExecPythonCalc.PYTHON_CALC_TRANSFORMATION,
-        minPlanVersion = FlinkVersion.v1_15,
-        minStateVersion = FlinkVersion.v1_15)
+        minPlanVersion = FlinkVersion.v1_16,
+        minStateVersion = FlinkVersion.v1_16)
 public class StreamExecPythonCalc extends CommonExecPythonCalc implements StreamExecNode<RowData> {
 
     public StreamExecPythonCalc(
+            ReadableConfig tableConfig,
             List<RexNode> projection,
             InputProperty inputProperty,
             RowType outputType,
@@ -52,6 +54,7 @@ public class StreamExecPythonCalc extends CommonExecPythonCalc implements Stream
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecPythonCalc.class),
+                ExecNodeContext.newPersistedConfig(StreamExecPythonCalc.class, tableConfig),
                 projection,
                 Collections.singletonList(inputProperty),
                 outputType,
@@ -62,10 +65,11 @@ public class StreamExecPythonCalc extends CommonExecPythonCalc implements Stream
     public StreamExecPythonCalc(
             @JsonProperty(FIELD_NAME_ID) int id,
             @JsonProperty(FIELD_NAME_TYPE) ExecNodeContext context,
+            @JsonProperty(FIELD_NAME_CONFIGURATION) ReadableConfig persistedConfig,
             @JsonProperty(FIELD_NAME_PROJECTION) List<RexNode> projection,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
-        super(id, context, projection, inputProperties, outputType, description);
+        super(id, context, persistedConfig, projection, inputProperties, outputType, description);
     }
 }

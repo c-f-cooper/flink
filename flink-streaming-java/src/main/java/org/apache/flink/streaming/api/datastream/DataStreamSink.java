@@ -59,13 +59,17 @@ public class DataStreamSink<T> {
                         inputStream.getTransformation(),
                         "Unnamed",
                         sinkOperator,
-                        executionEnvironment.getParallelism());
+                        executionEnvironment.getParallelism(),
+                        false);
         executionEnvironment.addOperator(transformation);
         return new DataStreamSink<>(transformation);
     }
 
     @Internal
-    public static <T> DataStreamSink<T> forSink(DataStream<T> inputStream, Sink<T> sink) {
+    public static <T> DataStreamSink<T> forSink(
+            DataStream<T> inputStream,
+            Sink<T> sink,
+            CustomSinkOperatorUidHashes customSinkOperatorUidHashes) {
         final StreamExecutionEnvironment executionEnvironment =
                 inputStream.getExecutionEnvironment();
         SinkTransformation<T, T> transformation =
@@ -74,15 +78,19 @@ public class DataStreamSink<T> {
                         sink,
                         inputStream.getType(),
                         "Sink",
-                        executionEnvironment.getParallelism());
+                        executionEnvironment.getParallelism(),
+                        false,
+                        customSinkOperatorUidHashes);
         executionEnvironment.addOperator(transformation);
         return new DataStreamSink<>(transformation);
     }
 
     @Internal
     public static <T> DataStreamSink<T> forSinkV1(
-            DataStream<T> inputStream, org.apache.flink.api.connector.sink.Sink<T, ?, ?, ?> sink) {
-        return forSink(inputStream, SinkV1Adapter.wrap(sink));
+            DataStream<T> inputStream,
+            org.apache.flink.api.connector.sink.Sink<T, ?, ?, ?> sink,
+            CustomSinkOperatorUidHashes customSinkOperatorUidHashes) {
+        return forSink(inputStream, SinkV1Adapter.wrap(sink), customSinkOperatorUidHashes);
     }
 
     /** Returns the transformation that contains the actual sink operator of this sink. */

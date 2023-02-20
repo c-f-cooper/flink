@@ -33,7 +33,7 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.mailbox.SyncMailboxExecutor;
 import org.apache.flink.runtime.metrics.groups.InternalSinkWriterMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import org.apache.flink.shaded.guava30.com.google.common.collect.ImmutableList;
@@ -43,11 +43,11 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.slf4j.Logger;
@@ -74,17 +74,11 @@ import java.util.stream.IntStream;
 import static org.apache.flink.connector.kafka.testutils.KafkaUtil.createKafkaContainer;
 import static org.apache.flink.connector.kafka.testutils.KafkaUtil.drainAllRecordsFromTopic;
 import static org.apache.flink.util.DockerImageVersions.KAFKA;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.sameInstance;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for the standalone KafkaWriter. */
-public class KafkaWriterITCase extends TestLogger {
+@ExtendWith(TestLoggerExtension.class)
+public class KafkaWriterITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(KafkaWriterITCase.class);
     private static final String INTER_CONTAINER_KAFKA_ALIAS = "kafka";
@@ -124,7 +118,7 @@ public class KafkaWriterITCase extends TestLogger {
     public void testRegisterMetrics(DeliveryGuarantee guarantee) throws Exception {
         try (final KafkaWriter<Integer> ignored =
                 createWriterWithConfiguration(getKafkaClientConfiguration(), guarantee)) {
-            assertTrue(metricListener.getGauge(KAFKA_METRIC_WITH_GROUP_NAME).isPresent());
+            assertThat(metricListener.getGauge(KAFKA_METRIC_WITH_GROUP_NAME).isPresent()).isTrue();
         }
     }
 
@@ -145,13 +139,30 @@ public class KafkaWriterITCase extends TestLogger {
         try (final KafkaWriter<Integer> writer =
                 createWriterWithConfiguration(
                         getKafkaClientConfiguration(), DeliveryGuarantee.NONE, metricGroup)) {
-            final Counter numBytesOut = operatorIOMetricGroup.getNumBytesOutCounter();
-            final Counter numRecordsOut = operatorIOMetricGroup.getNumRecordsOutCounter();
-            assertEquals(numBytesOut.getCount(), 0L);
+            final Counter numBytesOut = metricGroup.getIOMetricGroup().getNumBytesOutCounter();
+            final Counter numRecordsOut = metricGroup.getIOMetricGroup().getNumRecordsOutCounter();
+            final Counter numRecordsOutErrors = metricGroup.getNumRecordsOutErrorsCounter();
+            final Counter numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
+            assertThat(numBytesOut.getCount()).isEqualTo(0L);
+            assertThat(numRecordsOut.getCount()).isEqualTo(0);
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(0);
+            assertThat(numRecordsSendErrors.getCount()).isEqualTo(0);
+
+            // elements for which the serializer returns null should be silently skipped
+            writer.write(null, SINK_WRITER_CONTEXT);
+            timeService.trigger();
+            assertThat(numBytesOut.getCount()).isEqualTo(0L);
+            assertThat(numRecordsOut.getCount()).isEqualTo(0);
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(0);
+            assertThat(numRecordsSendErrors.getCount()).isEqualTo(0);
+
+            // but elements for which a non-null producer record is returned should count
             writer.write(1, SINK_WRITER_CONTEXT);
             timeService.trigger();
-            assertEquals(numRecordsOut.getCount(), 1);
-            assertThat(numBytesOut.getCount(), greaterThan(0L));
+            assertThat(numRecordsOut.getCount()).isEqualTo(1);
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(0);
+            assertThat(numRecordsSendErrors.getCount()).isEqualTo(0);
+            assertThat(numBytesOut.getCount()).isGreaterThan(0L);
         }
     }
 
@@ -166,8 +177,8 @@ public class KafkaWriterITCase extends TestLogger {
                         metricGroup)) {
             final Optional<Gauge<Long>> currentSendTime =
                     metricListener.getGauge("currentSendTime");
-            assertTrue(currentSendTime.isPresent());
-            assertEquals(currentSendTime.get().getValue(), 0L);
+            assertThat(currentSendTime.isPresent()).isTrue();
+            assertThat(currentSendTime.get().getValue()).isEqualTo(0L);
             IntStream.range(0, 100)
                     .forEach(
                             (run) -> {
@@ -181,7 +192,40 @@ public class KafkaWriterITCase extends TestLogger {
                                     throw new RuntimeException("Failed writing Kafka record.");
                                 }
                             });
-            assertThat(currentSendTime.get().getValue(), greaterThan(0L));
+            assertThat(currentSendTime.get().getValue()).isGreaterThan(0L);
+        }
+    }
+
+    @Test
+    void testNumRecordsOutErrorsCounterMetric() throws Exception {
+        Properties properties = getKafkaClientConfiguration();
+        final InternalSinkWriterMetricGroup metricGroup =
+                InternalSinkWriterMetricGroup.mock(metricListener.getMetricGroup());
+
+        try (final KafkaWriter<Integer> writer =
+                createWriterWithConfiguration(
+                        properties, DeliveryGuarantee.EXACTLY_ONCE, metricGroup)) {
+            final Counter numRecordsOutErrors = metricGroup.getNumRecordsOutErrorsCounter();
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(0L);
+
+            writer.write(1, SINK_WRITER_CONTEXT);
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(0L);
+
+            final String transactionalId = writer.getCurrentProducer().getTransactionalId();
+
+            try (FlinkKafkaInternalProducer<byte[], byte[]> producer =
+                    new FlinkKafkaInternalProducer<>(properties, transactionalId)) {
+
+                producer.initTransactions();
+                producer.beginTransaction();
+                producer.send(new ProducerRecord<byte[], byte[]>(topic, "2".getBytes()));
+                producer.commitTransaction();
+            }
+
+            writer.write(3, SINK_WRITER_CONTEXT);
+            writer.flush(false);
+            writer.prepareCommit();
+            assertThat(numRecordsOutErrors.getCount()).isEqualTo(1L);
         }
     }
 
@@ -199,8 +243,8 @@ public class KafkaWriterITCase extends TestLogger {
                 writer.write(1, SINK_WRITER_CONTEXT);
                 expected.add("testMetadataPublisher-0@" + i);
             }
-            writer.prepareCommit();
-            org.assertj.core.api.Assertions.assertThat(metadataList).isEqualTo(expected);
+            writer.flush(false);
+            assertThat(metadataList).usingRecursiveComparison().isEqualTo(expected);
         }
     }
 
@@ -227,15 +271,15 @@ public class KafkaWriterITCase extends TestLogger {
             recoveredWriter.flush(false);
             Collection<KafkaCommittable> committables = recoveredWriter.prepareCommit();
             recoveredWriter.snapshotState(1);
-            assertThat(committables, hasSize(1));
+            assertThat(committables).hasSize(1);
             final KafkaCommittable committable = committables.stream().findFirst().get();
-            assertThat(committable.getProducer().isPresent(), equalTo(true));
+            assertThat(committable.getProducer().isPresent()).isTrue();
 
             committable.getProducer().get().getObject().commitTransaction();
 
             List<ConsumerRecord<byte[], byte[]>> records =
                     drainAllRecordsFromTopic(topic, getKafkaClientConfiguration(), true);
-            assertThat(records, hasSize(1));
+            assertThat(records).hasSize(1);
         }
 
         failedWriter.close();
@@ -250,19 +294,18 @@ public class KafkaWriterITCase extends TestLogger {
     void useSameProducerForNonTransactional(DeliveryGuarantee guarantee) throws Exception {
         try (final KafkaWriter<Integer> writer =
                 createWriterWithConfiguration(getKafkaClientConfiguration(), guarantee)) {
-            assertThat(writer.getProducerPool(), hasSize(0));
+            assertThat(writer.getProducerPool()).hasSize(0);
 
             FlinkKafkaInternalProducer<byte[], byte[]> firstProducer = writer.getCurrentProducer();
             writer.flush(false);
             Collection<KafkaCommittable> committables = writer.prepareCommit();
             writer.snapshotState(0);
-            assertThat(committables, hasSize(0));
+            assertThat(committables).hasSize(0);
 
-            assertThat(
-                    "Expected same producer",
-                    writer.getCurrentProducer(),
-                    sameInstance(firstProducer));
-            assertThat(writer.getProducerPool(), hasSize(0));
+            assertThat(writer.getCurrentProducer() == firstProducer)
+                    .as("Expected same producer")
+                    .isTrue();
+            assertThat(writer.getProducerPool()).hasSize(0);
         }
     }
 
@@ -272,39 +315,37 @@ public class KafkaWriterITCase extends TestLogger {
         try (final KafkaWriter<Integer> writer =
                 createWriterWithConfiguration(
                         getKafkaClientConfiguration(), DeliveryGuarantee.EXACTLY_ONCE)) {
-            assertThat(writer.getProducerPool(), hasSize(0));
+            assertThat(writer.getProducerPool()).hasSize(0);
 
             writer.flush(false);
             Collection<KafkaCommittable> committables0 = writer.prepareCommit();
             writer.snapshotState(1);
-            assertThat(committables0, hasSize(1));
+            assertThat(committables0).hasSize(1);
             final KafkaCommittable committable = committables0.stream().findFirst().get();
-            assertThat(committable.getProducer().isPresent(), equalTo(true));
+            assertThat(committable.getProducer().isPresent()).isTrue();
 
             FlinkKafkaInternalProducer<?, ?> firstProducer =
                     committable.getProducer().get().getObject();
-            assertThat(
-                    "Expected different producer",
-                    firstProducer,
-                    not(sameInstance(writer.getCurrentProducer())));
+            assertThat(firstProducer != writer.getCurrentProducer())
+                    .as("Expected different producer")
+                    .isTrue();
 
             // recycle first producer, KafkaCommitter would commit it and then return it
-            assertThat(writer.getProducerPool(), hasSize(0));
+            assertThat(writer.getProducerPool()).hasSize(0);
             firstProducer.commitTransaction();
             committable.getProducer().get().close();
-            assertThat(writer.getProducerPool(), hasSize(1));
+            assertThat(writer.getProducerPool()).hasSize(1);
 
             writer.flush(false);
             Collection<KafkaCommittable> committables1 = writer.prepareCommit();
             writer.snapshotState(2);
-            assertThat(committables1, hasSize(1));
+            assertThat(committables1).hasSize(1);
             final KafkaCommittable committable1 = committables1.stream().findFirst().get();
-            assertThat(committable1.getProducer().isPresent(), equalTo(true));
+            assertThat(committable1.getProducer().isPresent()).isTrue();
 
-            assertThat(
-                    "Expected recycled producer",
-                    firstProducer,
-                    sameInstance(writer.getCurrentProducer()));
+            assertThat(firstProducer == writer.getCurrentProducer())
+                    .as("Expected recycled producer")
+                    .isTrue();
         }
     }
 
@@ -318,7 +359,7 @@ public class KafkaWriterITCase extends TestLogger {
         try (final KafkaWriter<Integer> writer =
                 createWriterWithConfiguration(properties, DeliveryGuarantee.EXACTLY_ONCE)) {
             writer.write(1, SINK_WRITER_CONTEXT);
-            assertThat(drainAllRecordsFromTopic(topic, properties, true), hasSize(0));
+            assertThat(drainAllRecordsFromTopic(topic, properties, true)).hasSize(0);
         }
 
         try (final KafkaWriter<Integer> writer =
@@ -329,7 +370,7 @@ public class KafkaWriterITCase extends TestLogger {
             writer.snapshotState(1L);
 
             // manually commit here, which would only succeed if the first transaction was aborted
-            assertThat(committables, hasSize(1));
+            assertThat(committables).hasSize(1);
             final KafkaCommittable committable = committables.stream().findFirst().get();
             String transactionalId = committable.getTransactionalId();
             try (FlinkKafkaInternalProducer<byte[], byte[]> producer =
@@ -338,7 +379,7 @@ public class KafkaWriterITCase extends TestLogger {
                 producer.commitTransaction();
             }
 
-            assertThat(drainAllRecordsFromTopic(topic, properties, true), hasSize(1));
+            assertThat(drainAllRecordsFromTopic(topic, properties, true)).hasSize(1);
         }
     }
 
@@ -348,8 +389,7 @@ public class KafkaWriterITCase extends TestLogger {
         config.put(configKey, configValue);
         try (final KafkaWriter<Integer> ignored =
                 createWriterWithConfiguration(config, guarantee)) {
-            Assertions.assertFalse(
-                    metricListener.getGauge(KAFKA_METRIC_WITH_GROUP_NAME).isPresent());
+            assertThat(metricListener.getGauge(KAFKA_METRIC_WITH_GROUP_NAME)).isNotPresent();
         }
     }
 
@@ -435,6 +475,11 @@ public class KafkaWriterITCase extends TestLogger {
         }
 
         @Override
+        public int getAttemptNumber() {
+            return 0;
+        }
+
+        @Override
         public SinkWriterMetricGroup metricGroup() {
             return metricGroup;
         }
@@ -460,6 +505,10 @@ public class KafkaWriterITCase extends TestLogger {
         @Override
         public ProducerRecord<byte[], byte[]> serialize(
                 Integer element, KafkaSinkContext context, Long timestamp) {
+            if (element == null) {
+                // in general, serializers should be allowed to skip invalid elements
+                return null;
+            }
             return new ProducerRecord<>(topic, ByteBuffer.allocate(4).putInt(element).array());
         }
     }
