@@ -74,8 +74,6 @@ under the License.
 		<module>flink-netty-shuffle-memory-control-test</module>
 		<module>flink-python-test</module>
 		<module>flink-end-to-end-tests-hbase</module>
-		<module>flink-glue-schema-registry-avro-test</module>
-		<module>flink-glue-schema-registry-json-test</module>
 		<module>flink-end-to-end-tests-scala</module>
 		<module>flink-end-to-end-tests-sql</module>
     </modules>
@@ -88,7 +86,7 @@ under the License.
 			<dependency>
 				<groupId>net.java.dev.jna</groupId>
 				<artifactId>jna</artifactId>
-				<version>5.5.0</version>
+				<version>5.8.0</version>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>

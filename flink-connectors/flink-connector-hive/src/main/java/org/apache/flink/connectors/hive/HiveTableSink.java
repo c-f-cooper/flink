@@ -55,11 +55,12 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink.BucketsBuilder;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.CatalogPropertiesUtil;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientFactory;
 import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientWrapper;
@@ -75,9 +76,9 @@ import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
@@ -123,12 +124,14 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
 
     private static final Logger LOG = LoggerFactory.getLogger(HiveTableSink.class);
 
+    public static final String BATCH_COMPACT_WRITER_OP_NAME = "batch_writer";
+
     private final boolean fallbackMappedReader;
     private final boolean fallbackMappedWriter;
     private final JobConf jobConf;
-    private final CatalogTable catalogTable;
+    private final ResolvedCatalogTable catalogTable;
     private final ObjectIdentifier identifier;
-    private final TableSchema tableSchema;
+    private final ResolvedSchema resolvedSchema;
     private final String hiveVersion;
     private final HiveShim hiveShim;
     private final boolean dynamicGroupingEnabled;
@@ -145,7 +148,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
             ReadableConfig flinkConf,
             JobConf jobConf,
             ObjectIdentifier identifier,
-            CatalogTable table,
+            ResolvedCatalogTable table,
             @Nullable Integer configuredSinkParallelism) {
         this(
                 flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER),
@@ -167,7 +170,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
             int gatherStatsThreadNum,
             JobConf jobConf,
             ObjectIdentifier identifier,
-            CatalogTable table,
+            ResolvedCatalogTable table,
             @Nullable Integer configuredSinkParallelism) {
         this.fallbackMappedReader = fallbackMappedReader;
         this.fallbackMappedWriter = fallbackMappedWriter;
@@ -182,7 +185,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                         jobConf.get(HiveCatalogFactoryOptions.HIVE_VERSION.key()),
                         "Hive version is not defined");
         hiveShim = HiveShimLoader.loadHiveShim(hiveVersion);
-        tableSchema = TableSchemaUtils.getPhysicalSchema(table.getSchema());
+        resolvedSchema = table.getResolvedSchema();
         this.configuredSinkParallelism = configuredSinkParallelism;
         validateAutoGatherStatistic(autoGatherStatistic, catalogTable);
     }
@@ -190,7 +193,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         DataStructureConverter converter =
-                context.createDataStructureConverter(tableSchema.toRowDataType());
+                context.createDataStructureConverter(resolvedSchema.toPhysicalRowDataType());
         return new DataStreamSinkProvider() {
             @Override
             public DataStreamSink<?> consumeDataStream(
@@ -282,7 +285,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                             jobConf,
                             hiveOutputFormatClz,
                             sd.getSerdeInfo(),
-                            tableSchema,
+                            resolvedSchema,
                             getPartitionKeyArray(),
                             tableProps,
                             hiveShim,
@@ -301,7 +304,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
             final int sinkParallelism =
                     Optional.ofNullable(configuredSinkParallelism)
                             .orElse(dataStream.getParallelism());
-            boolean sinkParallelismConfigued = configuredSinkParallelism != null;
+            boolean sinkParallelismConfigured = configuredSinkParallelism != null;
             if (isBounded) {
                 TableMetaStoreFactory msFactory =
                         isInsertDirectory
@@ -338,7 +341,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                         isToLocal,
                         overwrite,
                         sinkParallelism,
-                        sinkParallelismConfigued);
+                        sinkParallelismConfigured);
             } else {
                 if (overwrite) {
                     throw new IllegalStateException("Streaming mode not support overwrite.");
@@ -351,7 +354,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                         writerFactory,
                         fileNamingBuilder,
                         sinkParallelism,
-                        sinkParallelismConfigued);
+                        sinkParallelismConfigured);
             }
         } catch (IOException e) {
             throw new FlinkRuntimeException("Failed to create staging dir", e);
@@ -374,7 +377,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
             boolean isToLocal,
             boolean overwrite,
             int sinkParallelism,
-            boolean sinkParallelismkConfigured)
+            boolean sinkParallelismConfigured)
             throws IOException {
         org.apache.flink.configuration.Configuration conf =
                 new org.apache.flink.configuration.Configuration();
@@ -384,6 +387,13 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
             Optional<Integer> compactParallelismOptional =
                     conf.getOptional(FileSystemConnectorOptions.COMPACTION_PARALLELISM);
             int compactParallelism = compactParallelismOptional.orElse(sinkParallelism);
+            boolean compactParallelismConfigured =
+                    compactParallelismOptional.isPresent()
+                            ||
+                            // if only sink parallelism is set, compact operator should follow this
+                            // setting. that means its parallelism equals to sink and marked as
+                            // configured to disable auto parallelism inference.
+                            sinkParallelismConfigured;
             return createBatchCompactSink(
                     dataStream,
                     converter,
@@ -402,8 +412,8 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                     overwrite,
                     sinkParallelism,
                     compactParallelism,
-                    sinkParallelismkConfigured,
-                    compactParallelismOptional.isPresent());
+                    sinkParallelismConfigured,
+                    compactParallelismConfigured);
         } else {
             return createBatchNoCompactSink(
                     dataStream,
@@ -414,7 +424,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                     stagingParentDir,
                     isToLocal,
                     sinkParallelism,
-                    sinkParallelismkConfigured);
+                    sinkParallelismConfigured);
         }
     }
 
@@ -460,8 +470,8 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                 new HiveRowPartitionComputer(
                         hiveShim,
                         JobConfUtils.getDefaultPartitionName(jobConf),
-                        tableSchema.getFieldNames(),
-                        tableSchema.getFieldDataTypes(),
+                        resolvedSchema.getColumnNames().toArray(new String[0]),
+                        resolvedSchema.getColumnDataTypes().toArray(new DataType[0]),
                         partitionColumns);
 
         SingleOutputStreamOperator<Row> map =
@@ -470,7 +480,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
 
         DataStream<CoordinatorInput> writerDataStream =
                 map.transform(
-                        "batch_compact_writer",
+                        BATCH_COMPACT_WRITER_OP_NAME,
                         TypeInformation.of(CoordinatorInput.class),
                         new BatchFileWriter<>(
                                 fsFactory,
@@ -522,8 +532,8 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                 new HiveRowDataPartitionComputer(
                         hiveShim,
                         JobConfUtils.getDefaultPartitionName(jobConf),
-                        tableSchema.getFieldNames(),
-                        tableSchema.getFieldDataTypes(),
+                        resolvedSchema.getColumnNames().toArray(new String[0]),
+                        resolvedSchema.getColumnDataTypes().toArray(new DataType[0]),
                         getPartitionKeyArray());
         TableBucketAssigner assigner = new TableBucketAssigner(partComputer);
         HiveRollingPolicy rollingPolicy =
@@ -581,8 +591,8 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                 new HiveRowPartitionComputer(
                         hiveShim,
                         JobConfUtils.getDefaultPartitionName(jobConf),
-                        tableSchema.getFieldNames(),
-                        tableSchema.getFieldDataTypes(),
+                        resolvedSchema.getColumnNames().toArray(new String[0]),
+                        resolvedSchema.getColumnDataTypes().toArray(new DataType[0]),
                         getPartitionKeyArray()));
         builder.setDynamicGrouped(dynamicGrouping);
         builder.setPartitionColumns(getPartitionKeyArray());
@@ -694,7 +704,7 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
                 jobConf,
                 catalogTable,
                 hiveVersion,
-                (RowType) tableSchema.toRowDataType().getLogicalType(),
+                (RowType) resolvedSchema.toPhysicalRowDataType().getLogicalType(),
                 fallbackMappedReader);
     }
 
@@ -732,12 +742,12 @@ public class HiveTableSink implements DynamicTableSink, SupportsPartitioning, Su
     private Optional<BulkWriter.Factory<RowData>> createBulkWriterFactory(
             String[] partitionColumns, StorageDescriptor sd) {
         String serLib = sd.getSerdeInfo().getSerializationLib().toLowerCase();
-        int formatFieldCount = tableSchema.getFieldCount() - partitionColumns.length;
+        int formatFieldCount = resolvedSchema.getColumns().size() - partitionColumns.length;
         String[] formatNames = new String[formatFieldCount];
         LogicalType[] formatTypes = new LogicalType[formatFieldCount];
         for (int i = 0; i < formatFieldCount; i++) {
-            formatNames[i] = tableSchema.getFieldName(i).get();
-            formatTypes[i] = tableSchema.getFieldDataType(i).get().getLogicalType();
+            formatNames[i] = resolvedSchema.getColumnNames().get(i);
+            formatTypes[i] = resolvedSchema.getColumnDataTypes().get(i).getLogicalType();
         }
         RowType formatType = RowType.of(formatTypes, formatNames);
         if (serLib.contains("parquet")) {

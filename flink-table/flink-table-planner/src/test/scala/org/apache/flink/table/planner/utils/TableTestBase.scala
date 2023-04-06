@@ -21,6 +21,7 @@ import org.apache.flink.api.common.typeinfo.{AtomicType, TypeInformation}
 import org.apache.flink.api.java.typeutils.{PojoTypeInfo, RowTypeInfo, TupleTypeInfo}
 import org.apache.flink.api.scala.typeutils.CaseClassTypeInfo
 import org.apache.flink.configuration.BatchExecutionOptions
+import org.apache.flink.core.testutils.FlinkMatchers.containsMessage
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode
 import org.apache.flink.streaming.api.{environment, TimeCharacteristic}
 import org.apache.flink.streaming.api.datastream.DataStream
@@ -76,7 +77,7 @@ import org.apache.calcite.avatica.util.TimeUnit
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.sql.{SqlExplainLevel, SqlIntervalQualifier}
 import org.apache.calcite.sql.parser.SqlParserPos
-import org.junit.Assert.{assertEquals, assertTrue, fail}
+import org.junit.Assert.{assertEquals, assertThat, assertTrue, fail}
 import org.junit.Rule
 import org.junit.rules.{ExpectedException, TemporaryFolder, TestName}
 
@@ -744,6 +745,21 @@ abstract class TableTestUtilBase(test: TableTestBase, isStreamingMode: Boolean) 
     doVerifyExplain(table.explain(extraDetails: _*), extraDetails: _*)
   }
 
+  /** Verify the expected exception for the given sql with the given message and exception class. */
+  def verifyExpectdException(
+      sql: String,
+      message: String,
+      clazz: Class[_ <: Throwable] = classOf[ValidationException]): Unit = {
+    try {
+      verifyExplain(sql)
+      fail(s"Expected a $clazz, but no exception is thrown.")
+    } catch {
+      case e: Throwable =>
+        assertTrue(clazz.isAssignableFrom(e.getClass))
+        assertThat(e, containsMessage(message))
+    }
+  }
+
   /**
    * Verify the explain result for the given [[Table]] with the given sink table name. See more
    * about [[StatementSet#explain()]].
@@ -1161,7 +1177,7 @@ abstract class TableTestUtil(
       tableSource: TableSource[_],
       statistic: FlinkStatistic): Table = {
     // TODO RichTableSourceQueryOperation should be deleted and use registerTableSourceInternal
-    //  method instead of registerTable method here after unique key in TableSchema is ready
+    //  method instead of createTemporaryView method here after unique key in TableSchema is ready
     //  and setting catalog statistic to TableSourceTable in DatabaseCalciteSchema is ready
     val identifier = ObjectIdentifier.of(
       testingTableEnv.getCurrentCatalog,
@@ -1169,7 +1185,7 @@ abstract class TableTestUtil(
       name)
     val operation = new RichTableSourceQueryOperation(identifier, tableSource, statistic)
     val table = testingTableEnv.createTable(operation)
-    testingTableEnv.registerTable(name, table)
+    testingTableEnv.createTemporaryView(name, table)
     testingTableEnv.from(name)
   }
 
@@ -1299,7 +1315,7 @@ case class StreamTableTestUtil(
       expr
     )
     val queryOperation = new PlannerQueryOperation(watermarkAssigner)
-    testingTableEnv.registerTable(tableName, testingTableEnv.createTable(queryOperation))
+    testingTableEnv.createTemporaryView(tableName, testingTableEnv.createTable(queryOperation))
   }
 
   def buildStreamProgram(firstProgramNameToRemove: String): Unit = {
@@ -1706,7 +1722,8 @@ object TableTestUtil {
       statistic.getOrElse(FlinkStatistic.UNKNOWN)
     )
     val table = tEnv.asInstanceOf[TableEnvironmentImpl].createTable(dataStreamQueryOperation)
-    tEnv.registerTable(name, table)
+    // the table name is UUID generated which should be quoted to parse safely
+    tEnv.createTemporaryView(s"`$name`", table)
   }
 
   def readFromResource(path: String): String = {

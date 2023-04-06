@@ -3,6 +3,8 @@ Mode "embedded" (default) submits Flink jobs from the local machine.
 
   Syntax: [embedded] [OPTIONS]
   "embedded" mode options:
+     -D <session dynamic config key=val>        The dynamic config key=val for a
+                                                session.
      -f,--file <script file>                    Script file that should be
                                                 executed. In this mode, the
                                                 client will not open an
@@ -101,6 +103,12 @@ Mode "embedded" (default) submits Flink jobs from the local machine.
                                                 file:///tmp/myresource.zip,hdfs:
                                                 ///$namenode_address/myresource2
                                                 .zip).
+     -pypath,--pyPythonPath <arg>               Specify the path of the python
+                                                installation in worker
+                                                nodes.(e.g.: --pyPythonPath
+                                                /python/lib64/python3.7/).User
+                                                can specify multiple paths using
+                                                the separator ":".
      -pyreq,--pyRequirements <arg>              Specify a requirements.txt file
                                                 which defines the third-party
                                                 dependencies. These dependencies

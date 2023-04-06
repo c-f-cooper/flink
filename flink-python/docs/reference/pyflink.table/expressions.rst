@@ -54,6 +54,7 @@ Expressions
     array
     row
     map_
+    map_from_arrays
     row_interval
     pi
     e
@@ -226,6 +227,11 @@ advanced type helper functions
     Expression.element
     Expression.array_contains
     Expression.array_distinct
+    Expression.array_position
+    Expression.array_remove
+    Expression.array_reverse
+    Expression.map_keys
+    Expression.map_values
 
 
 time definition functions

@@ -44,6 +44,7 @@ import static org.apache.flink.client.cli.CliFrontendParser.PYCLIENTEXEC_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.PYEXEC_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.PYFILES_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.PYREQUIREMENTS_OPTION;
+import static org.apache.flink.client.cli.CliFrontendParser.PYTHON_PATH;
 
 /** Parser for command line options. */
 public class CliOptionsParser {
@@ -62,6 +63,15 @@ public class CliOptionsParser {
                     .numberOfArgs(1)
                     .argName("session identifier")
                     .desc("The identifier for a session. 'default' is the default identifier.")
+                    .build();
+
+    public static final Option OPTION_SESSION_CONFIG =
+            Option.builder("D")
+                    .required(false)
+                    .numberOfArgs(2)
+                    .valueSeparator('=')
+                    .argName("session dynamic config key=val")
+                    .desc("The dynamic config key=val for a session.")
                     .build();
 
     public static final Option OPTION_INIT_FILE =
@@ -158,6 +168,7 @@ public class CliOptionsParser {
     private static void buildGeneralOptions(Options options) {
         options.addOption(OPTION_HELP);
         options.addOption(OPTION_SESSION);
+        options.addOption(OPTION_SESSION_CONFIG);
         options.addOption(OPTION_INIT_FILE);
         options.addOption(OPTION_FILE);
         options.addOption(OPTION_UPDATE);
@@ -173,6 +184,7 @@ public class CliOptionsParser {
         options.addOption(PYARCHIVE_OPTION);
         options.addOption(PYEXEC_OPTION);
         options.addOption(PYCLIENTEXEC_OPTION);
+        options.addOption(PYTHON_PATH);
         return options;
     }
 
@@ -257,7 +269,8 @@ public class CliOptionsParser {
                     line.getOptionValue(CliOptionsParser.OPTION_HISTORY.getOpt()),
                     checkUrls(line, CliOptionsParser.OPTION_JAR),
                     checkUrls(line, CliOptionsParser.OPTION_LIBRARY),
-                    getPythonConfiguration(line));
+                    getPythonConfiguration(line),
+                    line.getOptionProperties(OPTION_SESSION_CONFIG.getOpt()));
         } catch (ParseException e) {
             throw new SqlClientException(e.getMessage());
         }
@@ -278,7 +291,8 @@ public class CliOptionsParser {
                             ? NetUtils.parseHostPortAddress(
                                     line.getOptionValue(
                                             CliOptionsParser.OPTION_ENDPOINT_ADDRESS.getOpt()))
-                            : null);
+                            : null,
+                    line.getOptionProperties(OPTION_SESSION_CONFIG.getOpt()));
         } catch (ParseException e) {
             throw new SqlClientException(e.getMessage());
         }

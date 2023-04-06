@@ -67,7 +67,6 @@ flink-dstl/flink-dstl-dfs,\
 MODULES_TABLE="\
 flink-table,\
 flink-table/flink-sql-parser,\
-flink-table/flink-sql-parser-hive,\
 flink-table/flink-table-common,\
 flink-table/flink-table-api-java,\
 flink-table/flink-table-api-scala,\
@@ -102,8 +101,6 @@ flink-formats,\
 flink-formats/flink-format-common,\
 flink-formats/flink-avro-confluent-registry,\
 flink-formats/flink-sql-avro-confluent-registry,\
-flink-formats/flink-avro-glue-schema-registry,\
-flink-formats/flink-json-glue-schema-registry,\
 flink-formats/flink-avro,\
 flink-formats/flink-sql-avro,\
 flink-formats/flink-compress,\
@@ -139,7 +136,6 @@ MODULES_CONNECTORS_2="\
 flink-connectors/flink-connector-base,\
 flink-connectors/flink-connector-kafka,\
 flink-connectors/flink-sql-connector-kafka,\
-flink-connectors/flink-connector-aws-base,\
 "
 
 MODULES_TESTS="\

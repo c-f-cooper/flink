@@ -38,6 +38,7 @@ import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.configuration.RestOptions;
@@ -76,6 +77,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -843,7 +846,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         final ApplicationId appId = appContext.getApplicationId();
 
-        // ------------------ Add Zookeeper namespace to local flinkConfiguraton ------
+        // ------------------ Add Zookeeper namespace to local flinkConfiguration ------
         setHAClusterIdIfNotSet(configuration, appId);
 
         if (HighAvailabilityMode.isHighAvailabilityModeActivated(configuration)) {
@@ -1151,14 +1154,13 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         final ContainerLaunchContext amContainer =
                 setupApplicationMasterContainer(yarnClusterEntrypoint, hasKrb5, processSpec);
 
-        if (configuration.getBoolean(SecurityOptions.KERBEROS_FETCH_DELEGATION_TOKEN)) {
-            KerberosLoginProvider kerberosLoginProvider = new KerberosLoginProvider(configuration);
-            if (kerberosLoginProvider.isLoginPossible()) {
-                setTokensFor(amContainer);
-            } else {
-                LOG.info(
-                        "Cannot use kerberos delegation token manager, no valid kerberos credentials provided.");
-            }
+        boolean fetchToken = configuration.getBoolean(SecurityOptions.DELEGATION_TOKENS_ENABLED);
+        KerberosLoginProvider kerberosLoginProvider = new KerberosLoginProvider(configuration);
+        if (kerberosLoginProvider.isLoginPossible(true)) {
+            setTokensFor(amContainer, fetchToken);
+        } else {
+            LOG.info(
+                    "Cannot use kerberos delegation token manager, no valid kerberos credentials provided.");
         }
 
         amContainer.setLocalResources(fileUploader.getRegisteredLocalResources());
@@ -1229,6 +1231,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         LOG.info("Waiting for the cluster to be allocated");
         final long startTime = System.currentTimeMillis();
+        long lastLogTime = System.currentTimeMillis();
         ApplicationReport report;
         YarnApplicationState lastAppState = YarnApplicationState.NEW;
         loop:
@@ -1264,9 +1267,11 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
                     if (appState != lastAppState) {
                         LOG.info("Deploying cluster, current state " + appState);
                     }
-                    if (System.currentTimeMillis() - startTime > 60000) {
+                    if (System.currentTimeMillis() - lastLogTime > 60000) {
+                        lastLogTime = System.currentTimeMillis();
                         LOG.info(
-                                "Deployment took more than 60 seconds. Please check if the requested resources are available in the YARN cluster");
+                                "Deployment took more than {} seconds. Please check if the requested resources are available in the YARN cluster",
+                                (lastLogTime - startTime) / 1000);
                     }
             }
             lastAppState = appState;
@@ -1292,21 +1297,36 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
                         });
     }
 
-    private void setTokensFor(ContainerLaunchContext containerLaunchContext) throws Exception {
-        LOG.info("Adding delegation tokens to the AM container.");
-
-        DelegationTokenManager delegationTokenManager =
-                new DefaultDelegationTokenManager(flinkConfiguration, null, null, null);
-        DelegationTokenContainer container = new DelegationTokenContainer();
-        delegationTokenManager.obtainDelegationTokens(container);
-
-        // This is here for backward compatibility to make log aggregation work
+    private void setTokensFor(ContainerLaunchContext containerLaunchContext, boolean fetchToken)
+            throws Exception {
         Credentials credentials = new Credentials();
-        for (Map.Entry<String, byte[]> e : container.getTokens().entrySet()) {
-            if (e.getKey().equals("hadoopfs")) {
-                credentials.addAll(HadoopDelegationTokenConverter.deserialize(e.getValue()));
+
+        LOG.info("Loading delegation tokens available locally to add to the AM container");
+        // for user
+        UserGroupInformation currUsr = UserGroupInformation.getCurrentUser();
+
+        Collection<Token<? extends TokenIdentifier>> usrTok =
+                currUsr.getCredentials().getAllTokens();
+        for (Token<? extends TokenIdentifier> token : usrTok) {
+            LOG.info("Adding user token " + token.getService() + " with " + token);
+            credentials.addToken(token.getService(), token);
+        }
+
+        if (fetchToken) {
+            LOG.info("Fetching delegation tokens to add to the AM container.");
+            DelegationTokenManager delegationTokenManager =
+                    new DefaultDelegationTokenManager(flinkConfiguration, null, null, null);
+            DelegationTokenContainer container = new DelegationTokenContainer();
+            delegationTokenManager.obtainDelegationTokens(container);
+
+            // This is here for backward compatibility to make log aggregation work
+            for (Map.Entry<String, byte[]> e : container.getTokens().entrySet()) {
+                if (e.getKey().equals("hadoopfs")) {
+                    credentials.addAll(HadoopDelegationTokenConverter.deserialize(e.getValue()));
+                }
             }
         }
+
         ByteBuffer tokens = ByteBuffer.wrap(HadoopDelegationTokenConverter.serialize(credentials));
         containerLaunchContext.setTokens(tokens);
 
@@ -1425,13 +1445,17 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
                 totalMemory += res.getMemory();
                 totalCores += res.getVirtualCores();
                 ps.format(format, "NodeID", rep.getNodeId());
-                ps.format(format, "Memory", res.getMemory() + " MB");
+                ps.format(format, "Memory", getDisplayMemory(res.getMemory()));
                 ps.format(format, "vCores", res.getVirtualCores());
                 ps.format(format, "HealthReport", rep.getHealthReport());
                 ps.format(format, "Containers", rep.getNumContainers());
                 ps.println("+---------------------------------------+");
             }
-            ps.println("Summary: totalMemory " + totalMemory + " totalCores " + totalCores);
+            ps.println(
+                    "Summary: totalMemory "
+                            + getDisplayMemory(totalMemory)
+                            + " totalCores "
+                            + totalCores);
             List<QueueInfo> qInfo = yarnClient.getAllQueues();
             for (QueueInfo q : qInfo) {
                 ps.println(
@@ -1920,5 +1944,9 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         // set classpath from YARN configuration
         Utils.setupYarnClassPath(this.yarnConfiguration, env);
         return env;
+    }
+
+    private String getDisplayMemory(long memoryMB) {
+        return MemorySize.ofMebiBytes(memoryMB).toHumanReadableString();
     }
 }
