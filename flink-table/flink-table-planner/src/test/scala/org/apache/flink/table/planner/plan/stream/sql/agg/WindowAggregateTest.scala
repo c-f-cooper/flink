@@ -19,12 +19,12 @@ package org.apache.flink.table.planner.plan.stream.sql.agg
 
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.table.api.{ExplainDetail, TableException, ValidationException}
-import org.apache.flink.table.api.config.OptimizerConfigOptions
+import org.apache.flink.table.api.config.{AggregatePhaseStrategy, OptimizerConfigOptions}
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.{WeightedAvg, WeightedAvgWithMerge}
 import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_EARLY_FIRE_DELAY, TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED, TABLE_EXEC_EMIT_LATE_FIRE_DELAY, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED}
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.TestPythonAggregateFunction
-import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.JavaTableFunc1
-import org.apache.flink.table.planner.utils.{AggregatePhaseStrategy, TableTestBase}
+import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedTableFunctions.{JavaTableFunc1, StringSplit}
+import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
 
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -101,7 +101,7 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
 
     // set agg-phase strategy
     util.tableEnv.getConfig
-      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, aggPhaseEnforcer.toString)
+      .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, aggPhaseEnforcer)
   }
 
   @TestTemplate
@@ -1650,6 +1650,105 @@ class WindowAggregateTest(aggPhaseEnforcer: AggregatePhaseStrategy) extends Tabl
         |GROUP BY window_start, window_end
       """.stripMargin
     util.verifyRelPlan(sql)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithCalcOnWindowColumnWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from
+        | TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |where window_start <> '123'
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithRankWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from (
+        | select *, row_number() over (partition by c order by proctime desc) as rn
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |where rn = 2
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithDedupWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from (
+        | select *, row_number() over (partition by c order by proctime desc) as rn
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |where rn = 1
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithOverAggWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, max(c1), count(a)
+        |from (
+        | select *, count(*) over (partition by c order by proctime desc) as c1
+        | from
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes))
+        |)
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithJoinWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select t.c, max(t2.e), count(t.a)
+        |from (
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes)) AS t
+        |  join MyTable t2 on t2.a = t.a
+        |)
+        |group by window_start, window_end, t.c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithCorrelateWhenCantMerge(): Unit = {
+    util.addTemporarySystemFunction("str_split", new StringSplit())
+    util.verifyRelPlan(
+      """
+        |select t.c, max(t2.x), count(t.a)
+        |from (
+        |  TABLE(CUMULATE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds, interval '5' minutes)) AS t
+        |  Left JOIN LATERAL TABLE(str_split('Jack,John', ',')) AS t2(x) ON TRUE
+        |)
+        |group by window_start, window_end, t.c, window_time
+        |""".stripMargin)
+  }
+
+  @TestTemplate
+  def testProctimeWindowTVFWithUnionWhenCantMerge(): Unit = {
+    util.verifyRelPlan(
+      """
+        |select c, count(a)
+        |from (
+        |  select * from
+        |  TABLE(TUMBLE(table MyTable, DESCRIPTOR(proctime), interval '10' seconds))
+        |  union all
+        |  select * from
+        |  TABLE(TUMBLE(table MyTable, DESCRIPTOR(proctime), interval '5' seconds))
+        |) t
+        |group by window_start, window_end, c, window_time
+        |""".stripMargin)
   }
 }
 

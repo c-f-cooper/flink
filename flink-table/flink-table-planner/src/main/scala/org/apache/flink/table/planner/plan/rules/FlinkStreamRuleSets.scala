@@ -126,6 +126,7 @@ object FlinkStreamRuleSets {
           CoreRules.FILTER_MERGE,
           // unnest rule
           LogicalUnnestRule.INSTANCE,
+          UncollectToTableFunctionScanRule.INSTANCE,
           // rewrite constant table function scan to correlate
           JoinTableFunctionScanToCorrelateRule.INSTANCE,
           // Wrap arguments for JSON aggregate functions
@@ -400,6 +401,8 @@ object FlinkStreamRuleSets {
     AsyncCalcSplitRule.SPLIT_CONDITION_REX_FIELD,
     // Avoids accessing a field from an asynchronous result (projection).
     AsyncCalcSplitRule.SPLIT_PROJECTION_REX_FIELD,
+    // Avoid having async calls in join conditions if they aren't already pushed down
+    AsyncCalcSplitRule.NO_ASYNC_JOIN_CONDITIONS,
     // Avoids dealing with an async call in the condition.
     AsyncCalcSplitRule.SPLIT_CONDITION,
     // Avoids dealing with Java calls in the same Calc as Async calls.

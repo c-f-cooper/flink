@@ -21,18 +21,22 @@ package org.apache.flink.runtime.scheduler;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.SavepointFormatType;
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.runtime.blob.VoidBlobWriter;
 import org.apache.flink.runtime.checkpoint.CheckpointProperties;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
+import org.apache.flink.runtime.checkpoint.DefaultCheckpointStatsTracker;
+import org.apache.flink.runtime.checkpoint.NoOpCheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.StandaloneCompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetricsBuilder;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptorFactory;
 import org.apache.flink.runtime.executiongraph.DefaultVertexAttemptNumberStore;
+import org.apache.flink.runtime.executiongraph.Execution;
+import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.io.network.partition.NoOpJobMasterPartitionTracker;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
@@ -45,17 +49,18 @@ import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.shuffle.ShuffleTestUtils;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.testutils.TestingUtils;
-import org.apache.flink.testutils.executor.TestExecutorResource;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.traces.Span;
 import org.apache.flink.traces.SpanBuilder;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.IterableUtils;
 import org.apache.flink.util.clock.SystemClock;
 
-import org.hamcrest.MatcherAssert;
-import org.hamcrest.Matchers;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
@@ -64,51 +69,62 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.stream.Collectors;
 
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for the {@link DefaultExecutionGraphFactory}. */
-public class DefaultExecutionGraphFactoryTest extends TestLogger {
+class DefaultExecutionGraphFactoryTest {
 
-    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    private static final Logger log =
+            LoggerFactory.getLogger(DefaultExecutionGraphFactoryTest.class);
 
-    @ClassRule
-    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
-            TestingUtils.defaultExecutorResource();
+    @TempDir private File tempDir;
+    private File temporaryFile;
+
+    @RegisterExtension
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
+
+    @BeforeEach
+    private void setup() {
+        temporaryFile = new File(tempDir.getAbsolutePath(), "stateFile");
+    }
 
     @Test
-    public void testRestoringModifiedJobFromSavepointFails() throws Exception {
+    void testRestoringModifiedJobFromSavepointFails() throws Exception {
         final JobGraph jobGraphWithNewOperator = createJobGraphWithSavepoint(false, 42L, 1);
 
         final ExecutionGraphFactory executionGraphFactory = createExecutionGraphFactory();
 
-        try {
-            executionGraphFactory.createAndRestoreExecutionGraph(
-                    jobGraphWithNewOperator,
-                    new StandaloneCompletedCheckpointStore(1),
-                    new CheckpointsCleaner(),
-                    new StandaloneCheckpointIDCounter(),
-                    TaskDeploymentDescriptorFactory.PartitionLocationConstraint.CAN_BE_UNKNOWN,
-                    0L,
-                    new DefaultVertexAttemptNumberStore(),
-                    SchedulerBase.computeVertexParallelismStore(jobGraphWithNewOperator),
-                    (execution, previousState, newState) -> {},
-                    rp -> false,
-                    log);
-            fail("Expected ExecutionGraph creation to fail because of non restored state.");
-        } catch (Exception e) {
-            assertThat(
-                    e, FlinkMatchers.containsMessage("Failed to rollback to checkpoint/savepoint"));
-        }
+        assertThatThrownBy(
+                        () ->
+                                executionGraphFactory.createAndRestoreExecutionGraph(
+                                        jobGraphWithNewOperator,
+                                        new StandaloneCompletedCheckpointStore(1),
+                                        new CheckpointsCleaner(),
+                                        new StandaloneCheckpointIDCounter(),
+                                        NoOpCheckpointStatsTracker.INSTANCE,
+                                        TaskDeploymentDescriptorFactory.PartitionLocationConstraint
+                                                .CAN_BE_UNKNOWN,
+                                        0L,
+                                        new DefaultVertexAttemptNumberStore(),
+                                        SchedulerBase.computeVertexParallelismStore(
+                                                jobGraphWithNewOperator),
+                                        (execution, previousState, newState) -> {},
+                                        rp -> false,
+                                        log))
+                .withFailMessage(
+                        "Expected ExecutionGraph creation to fail because of non restored state.")
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Failed to rollback to checkpoint/savepoint");
     }
 
     @Test
-    public void testRestoringModifiedJobFromSavepointWithAllowNonRestoredStateSucceeds()
-            throws Exception {
+    void testRestoringModifiedJobFromSavepointWithAllowNonRestoredStateSucceeds() throws Exception {
         // create savepoint data
         final long savepointId = 42L;
         final JobGraph jobGraphWithNewOperator = createJobGraphWithSavepoint(true, savepointId, 1);
@@ -122,6 +138,7 @@ public class DefaultExecutionGraphFactoryTest extends TestLogger {
                 completedCheckpointStore,
                 new CheckpointsCleaner(),
                 new StandaloneCheckpointIDCounter(),
+                NoOpCheckpointStatsTracker.INSTANCE,
                 TaskDeploymentDescriptorFactory.PartitionLocationConstraint.CAN_BE_UNKNOWN,
                 0L,
                 new DefaultVertexAttemptNumberStore(),
@@ -132,34 +149,37 @@ public class DefaultExecutionGraphFactoryTest extends TestLogger {
 
         final CompletedCheckpoint savepoint = completedCheckpointStore.getLatestCheckpoint();
 
-        MatcherAssert.assertThat(savepoint, notNullValue());
-
-        MatcherAssert.assertThat(savepoint.getCheckpointID(), Matchers.is(savepointId));
+        assertThat(savepoint).isNotNull();
+        assertThat(savepoint.getCheckpointID()).isEqualTo(savepointId);
     }
 
     @Test
-    public void testCheckpointStatsTrackerUpdatedWithNewParallelism() throws Exception {
+    void testCheckpointStatsTrackerUpdatedWithNewParallelism() throws Exception {
         final long savepointId = 42L;
         final JobGraph jobGraphWithParallelism2 = createJobGraphWithSavepoint(true, savepointId, 2);
 
         List<Span> spans = new ArrayList<>();
+        final JobManagerJobMetricGroup jobManagerJobMetricGroup =
+                new UnregisteredMetricGroups.UnregisteredJobManagerJobMetricGroup() {
+                    @Override
+                    public void addSpan(SpanBuilder spanBuilder) {
+                        spans.add(spanBuilder.build());
+                    }
+                };
         final ExecutionGraphFactory executionGraphFactory =
-                createExecutionGraphFactory(
-                        new UnregisteredMetricGroups.UnregisteredJobManagerJobMetricGroup() {
-                            @Override
-                            public void addSpan(SpanBuilder spanBuilder) {
-                                spans.add(spanBuilder.build());
-                            }
-                        });
+                createExecutionGraphFactory(jobManagerJobMetricGroup);
 
         final StandaloneCompletedCheckpointStore completedCheckpointStore =
                 new StandaloneCompletedCheckpointStore(1);
+        final CheckpointStatsTracker checkpointStatsTracker =
+                new DefaultCheckpointStatsTracker(10, jobManagerJobMetricGroup);
         ExecutionGraph executionGraph =
                 executionGraphFactory.createAndRestoreExecutionGraph(
                         jobGraphWithParallelism2,
                         completedCheckpointStore,
                         new CheckpointsCleaner(),
                         new StandaloneCheckpointIDCounter(),
+                        checkpointStatsTracker,
                         TaskDeploymentDescriptorFactory.PartitionLocationConstraint.CAN_BE_UNKNOWN,
                         0L,
                         new DefaultVertexAttemptNumberStore(),
@@ -170,45 +190,45 @@ public class DefaultExecutionGraphFactoryTest extends TestLogger {
                         rp -> false,
                         log);
 
-        CheckpointStatsTracker checkpointStatsTracker = executionGraph.getCheckpointStatsTracker();
-        checkpointStatsTracker.reportInitializationStartTs(
-                SystemClock.getInstance().absoluteTimeMillis());
-
         checkpointStatsTracker.reportRestoredCheckpoint(
                 savepointId,
                 CheckpointProperties.forSavepoint(false, SavepointFormatType.NATIVE),
                 "foo",
                 1337);
+
+        final Set<ExecutionAttemptID> executionAttemptIDs =
+                IterableUtils.toStream(executionGraph.getAllExecutionVertices())
+                        .map(ExecutionVertex::getCurrentExecutionAttempt)
+                        .map(Execution::getAttemptId)
+                        .collect(Collectors.toSet());
+        assertThat(executionAttemptIDs).hasSize(1);
         checkpointStatsTracker.reportInitializationMetrics(
+                executionAttemptIDs.iterator().next(),
                 new SubTaskInitializationMetricsBuilder(
                                 SystemClock.getInstance().absoluteTimeMillis())
                         .build());
 
-        MatcherAssert.assertThat(spans, hasSize(1));
+        assertThat(spans).hasSize(1);
     }
 
-    @Nonnull
     private ExecutionGraphFactory createExecutionGraphFactory() {
         return createExecutionGraphFactory(
                 UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
     }
 
-    @Nonnull
     private ExecutionGraphFactory createExecutionGraphFactory(
             JobManagerJobMetricGroup metricGroup) {
-        final ExecutionGraphFactory executionGraphFactory =
-                new DefaultExecutionGraphFactory(
-                        new Configuration(),
-                        ClassLoader.getSystemClassLoader(),
-                        new DefaultExecutionDeploymentTracker(),
-                        EXECUTOR_RESOURCE.getExecutor(),
-                        EXECUTOR_RESOURCE.getExecutor(),
-                        Time.milliseconds(0L),
-                        metricGroup,
-                        VoidBlobWriter.getInstance(),
-                        ShuffleTestUtils.DEFAULT_SHUFFLE_MASTER,
-                        NoOpJobMasterPartitionTracker.INSTANCE);
-        return executionGraphFactory;
+        return new DefaultExecutionGraphFactory(
+                new Configuration(),
+                ClassLoader.getSystemClassLoader(),
+                new DefaultExecutionDeploymentTracker(),
+                EXECUTOR_EXTENSION.getExecutor(),
+                EXECUTOR_EXTENSION.getExecutor(),
+                Time.milliseconds(0L),
+                metricGroup,
+                VoidBlobWriter.getInstance(),
+                ShuffleTestUtils.DEFAULT_SHUFFLE_MASTER,
+                NoOpJobMasterPartitionTracker.INSTANCE);
     }
 
     @Nonnull
@@ -217,8 +237,7 @@ public class DefaultExecutionGraphFactoryTest extends TestLogger {
         // create savepoint data
         final OperatorID operatorID = new OperatorID();
         final File savepointFile =
-                TestUtils.createSavepointWithOperatorState(
-                        TEMPORARY_FOLDER.newFile(), savepointId, operatorID);
+                TestUtils.createSavepointWithOperatorState(temporaryFile, savepointId, operatorID);
 
         // set savepoint settings which don't allow non restored state
         final SavepointRestoreSettings savepointRestoreSettings =

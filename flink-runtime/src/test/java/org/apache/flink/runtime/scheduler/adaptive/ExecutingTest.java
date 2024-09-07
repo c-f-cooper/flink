@@ -62,6 +62,7 @@ import org.apache.flink.runtime.operators.coordination.CoordinatorStoreImpl;
 import org.apache.flink.runtime.scheduler.DefaultVertexParallelismInfo;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.exceptionhistory.TestingAccessExecution;
@@ -70,49 +71,54 @@ import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.testutils.TestingUtils;
-import org.apache.flink.testutils.executor.TestExecutorResource;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.ClassRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import static org.apache.flink.runtime.scheduler.adaptive.WaitingForResourcesTest.assertNonNull;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link AdaptiveScheduler AdaptiveScheduler's} {@link Executing} state. */
-public class ExecutingTest extends TestLogger {
-    @ClassRule
-    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
-            TestingUtils.defaultExecutorResource();
+class ExecutingTest {
+
+    private static final Logger log = LoggerFactory.getLogger(ExecutingTest.class);
+
+    @RegisterExtension
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
 
     @Test
-    public void testExecutionGraphDeploymentOnEnter() throws Exception {
+    void testExecutionGraphDeploymentOnEnter() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             MockExecutionJobVertex mockExecutionJobVertex =
                     new MockExecutionJobVertex(MockExecutionVertex::new);
@@ -124,13 +130,13 @@ public class ExecutingTest extends TestLogger {
             Executing exec =
                     new ExecutingStateBuilder().setExecutionGraph(executionGraph).build(ctx);
 
-            assertThat(mockExecutionVertex.isDeployCalled(), is(true));
-            assertThat(executionGraph.getState(), is(JobStatus.RUNNING));
+            assertThat(mockExecutionVertex.isDeployCalled()).isTrue();
+            assertThat(executionGraph.getState()).isEqualTo(JobStatus.RUNNING);
         }
     }
 
     @Test
-    public void testNoDeploymentCallOnEnterWhenVertexRunning() throws Exception {
+    void testNoDeploymentCallOnEnterWhenVertexRunning() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             MockExecutionJobVertex mockExecutionJobVertex =
                     new MockExecutionJobVertex(MockExecutionVertex::new);
@@ -149,36 +155,159 @@ public class ExecutingTest extends TestLogger {
                     ctx,
                     ClassLoader.getSystemClassLoader(),
                     new ArrayList<>(),
-                    Duration.ZERO,
-                    null,
+                    TestingStateTransitionManager.Factory.noOpFactory(),
+                    1,
+                    1,
                     Instant.now());
-            assertThat(mockExecutionVertex.isDeployCalled(), is(false));
-        }
-    }
-
-    @Test(expected = IllegalStateException.class)
-    public void testIllegalStateExceptionOnNotRunningExecutionGraph() throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            ExecutionGraph notRunningExecutionGraph = new StateTrackingMockExecutionGraph();
-            assertThat(notRunningExecutionGraph.getState(), is(not(JobStatus.RUNNING)));
-
-            new Executing(
-                    notRunningExecutionGraph,
-                    getExecutionGraphHandler(notRunningExecutionGraph, ctx.getMainThreadExecutor()),
-                    new TestingOperatorCoordinatorHandler(),
-                    log,
-                    ctx,
-                    ClassLoader.getSystemClassLoader(),
-                    new ArrayList<>(),
-                    Duration.ZERO,
-                    null,
-                    Instant.now());
+            assertThat(mockExecutionVertex.isDeployCalled()).isFalse();
         }
     }
 
     @Test
-    public void testDisposalOfOperatorCoordinatorsOnLeaveOfStateWithExecutionGraph()
-            throws Exception {
+    void testIllegalStateExceptionOnNotRunningExecutionGraph() {
+        assertThatThrownBy(
+                        () -> {
+                            try (MockExecutingContext ctx = new MockExecutingContext()) {
+                                ExecutionGraph notRunningExecutionGraph =
+                                        new StateTrackingMockExecutionGraph();
+                                assertThat(notRunningExecutionGraph.getState())
+                                        .isNotEqualTo(JobStatus.RUNNING);
+
+                                new Executing(
+                                        notRunningExecutionGraph,
+                                        getExecutionGraphHandler(
+                                                notRunningExecutionGraph,
+                                                ctx.getMainThreadExecutor()),
+                                        new TestingOperatorCoordinatorHandler(),
+                                        log,
+                                        ctx,
+                                        ClassLoader.getSystemClassLoader(),
+                                        new ArrayList<>(),
+                                        TestingStateTransitionManager.Factory.noOpFactory(),
+                                        1,
+                                        1,
+                                        Instant.now());
+                            }
+                        })
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    public void testTriggerRescaleOnCompletedCheckpoint() throws Exception {
+        final AtomicBoolean rescaleTriggered = new AtomicBoolean();
+        final StateTransitionManager.Factory stateTransitionManagerFactory =
+                new TestingStateTransitionManager.Factory(
+                        () -> {}, () -> rescaleTriggered.set(true));
+        try (MockExecutingContext ctx = new MockExecutingContext()) {
+            final Executing testInstance =
+                    new ExecutingStateBuilder()
+                            .setStateTransitionManagerFactory(stateTransitionManagerFactory)
+                            .build(ctx);
+
+            assertThat(rescaleTriggered).isFalse();
+            testInstance.onCompletedCheckpoint();
+            assertThat(rescaleTriggered).isTrue();
+        }
+    }
+
+    @Test
+    public void testTriggerRescaleOnFailedCheckpoint() throws Exception {
+        final AtomicInteger rescaleTriggerCount = new AtomicInteger();
+        final StateTransitionManager.Factory stateTransitionManagerFactory =
+                new TestingStateTransitionManager.Factory(
+                        () -> {}, rescaleTriggerCount::incrementAndGet);
+        final int rescaleOnFailedCheckpointsCount = 3;
+        try (MockExecutingContext ctx = new MockExecutingContext()) {
+            final Executing testInstance =
+                    new ExecutingStateBuilder()
+                            .setStateTransitionManagerFactory(stateTransitionManagerFactory)
+                            .setRescaleOnFailedCheckpointCount(rescaleOnFailedCheckpointsCount)
+                            .build(ctx);
+
+            // do multiple rescale iterations to verify that subsequent failed checkpoints after a
+            // rescale result in the expected behavior
+            for (int rescaleIteration = 1; rescaleIteration <= 3; rescaleIteration++) {
+
+                // trigger an initial failed checkpoint event to show that the counting only starts
+                // with the subsequent change event
+                testInstance.onFailedCheckpoint();
+
+                // trigger change
+                testInstance.onNewResourceRequirements();
+
+                for (int i = 0; i < rescaleOnFailedCheckpointsCount; i++) {
+                    assertThat(rescaleTriggerCount)
+                            .as(
+                                    "No rescale operation should have been triggered for iteration #%d, yet.",
+                                    rescaleIteration)
+                            .hasValue(rescaleIteration - 1);
+                    testInstance.onFailedCheckpoint();
+                }
+
+                assertThat(rescaleTriggerCount)
+                        .as(
+                                "The rescale operation for iteration #%d should have been properly triggered.",
+                                rescaleIteration)
+                        .hasValue(rescaleIteration);
+            }
+        }
+    }
+
+    @Test
+    public void testOnCompletedCheckpointResetsFailedCheckpointCount() throws Exception {
+        final AtomicInteger rescaleTriggeredCount = new AtomicInteger();
+        final StateTransitionManager.Factory stateTransitionManagerFactory =
+                new TestingStateTransitionManager.Factory(
+                        () -> {}, rescaleTriggeredCount::incrementAndGet);
+        final int rescaleOnFailedCheckpointsCount = 3;
+        try (MockExecutingContext ctx = new MockExecutingContext()) {
+            final Executing testInstance =
+                    new ExecutingStateBuilder()
+                            .setStateTransitionManagerFactory(stateTransitionManagerFactory)
+                            .setRescaleOnFailedCheckpointCount(rescaleOnFailedCheckpointsCount)
+                            .build(ctx);
+
+            // trigger an initial failed checkpoint event to show that the counting only starts with
+            // the subsequent change event
+            testInstance.onFailedCheckpoint();
+
+            // trigger change
+            testInstance.onNewResourcesAvailable();
+
+            IntStream.range(0, rescaleOnFailedCheckpointsCount - 1)
+                    .forEach(ignored -> testInstance.onFailedCheckpoint());
+
+            assertThat(rescaleTriggeredCount)
+                    .as("No rescaling should have been trigger, yet.")
+                    .hasValue(0);
+
+            testInstance.onCompletedCheckpoint();
+
+            // trigger change
+            testInstance.onNewResourceRequirements();
+
+            assertThat(rescaleTriggeredCount)
+                    .as("The completed checkpoint should have triggered a rescale.")
+                    .hasValue(1);
+
+            IntStream.range(0, rescaleOnFailedCheckpointsCount - 1)
+                    .forEach(ignored -> testInstance.onFailedCheckpoint());
+
+            assertThat(rescaleTriggeredCount)
+                    .as(
+                            "No additional rescaling should have been trigger by any subsequent failed checkpoint, yet.")
+                    .hasValue(1);
+
+            testInstance.onFailedCheckpoint();
+
+            assertThat(rescaleTriggeredCount)
+                    .as("The previous failed checkpoint should have triggered the rescale.")
+                    .hasValue(2);
+        }
+    }
+
+    @Test
+    void testDisposalOfOperatorCoordinatorsOnLeaveOfStateWithExecutionGraph() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             TestingOperatorCoordinatorHandler operatorCoordinator =
                     new TestingOperatorCoordinatorHandler();
@@ -188,19 +317,20 @@ public class ExecutingTest extends TestLogger {
                             .build(ctx);
             exec.onLeave(MockState.class);
 
-            assertThat(operatorCoordinator.isDisposed(), is(true));
+            assertThat(operatorCoordinator.isDisposed()).isTrue();
         }
     }
 
     @Test
-    public void testUnrecoverableGlobalFailureTransitionsToFailingState() throws Exception {
+    void testUnrecoverableGlobalFailureTransitionsToFailingState() throws Exception {
         final String failureMsg = "test exception";
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             ctx.setExpectFailing(
                     failingArguments -> {
-                        assertThat(failingArguments.getExecutionGraph(), notNullValue());
-                        assertThat(failingArguments.getFailureCause().getMessage(), is(failureMsg));
+                        assertThat(failingArguments.getExecutionGraph()).isNotNull();
+                        assertThat(failingArguments.getFailureCause().getMessage())
+                                .isEqualTo(failureMsg);
                     });
             ctx.setHowToHandleFailure(FailureResult::canNotRestart);
             exec.handleGlobalFailure(
@@ -209,13 +339,13 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testRecoverableGlobalFailureTransitionsToRestarting() throws Exception {
+    void testRecoverableGlobalFailureTransitionsToRestarting() throws Exception {
         final Duration duration = Duration.ZERO;
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             ctx.setExpectRestarting(
                     restartingArguments ->
-                            assertThat(restartingArguments.getBackoffTime(), is(duration)));
+                            assertThat(restartingArguments.getBackoffTime()).isEqualTo(duration));
             ctx.setHowToHandleFailure(f -> FailureResult.canRestart(f, duration));
             exec.handleGlobalFailure(
                     new RuntimeException("Recoverable error"),
@@ -224,7 +354,7 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testCancelTransitionsToCancellingState() throws Exception {
+    void testCancelTransitionsToCancellingState() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             ctx.setExpectCancelling(assertNonNull());
@@ -233,12 +363,13 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testTransitionToFinishedOnFailedExecutionGraph() throws Exception {
+    void testTransitionToFinishedOnFailedExecutionGraph() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             ctx.setExpectFinished(
                     archivedExecutionGraph ->
-                            assertThat(archivedExecutionGraph.getState(), is(JobStatus.FAILED)));
+                            assertThat(archivedExecutionGraph.getState())
+                                    .isEqualTo(JobStatus.FAILED));
 
             // transition EG into terminal state, which will notify the Executing state about the
             // failure (async via the supplied executor)
@@ -248,127 +379,19 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testTransitionToFinishedOnSuspend() throws Exception {
+    void testTransitionToFinishedOnSuspend() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             ctx.setExpectFinished(
                     archivedExecutionGraph ->
-                            assertThat(archivedExecutionGraph.getState(), is(JobStatus.SUSPENDED)));
+                            assertThat(archivedExecutionGraph.getState())
+                                    .isEqualTo(JobStatus.SUSPENDED));
             exec.suspend(new RuntimeException("suspend"));
         }
     }
 
     @Test
-    public void testNotifyNewResourcesAvailableBeforeCooldownIsOverScheduledStateChange()
-            throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            // do not wait too long in the test
-            final Duration scalingIntervalMin = Duration.ofSeconds(1L);
-            final ExecutingStateBuilder executingStateBuilder =
-                    new ExecutingStateBuilder().setScalingIntervalMin(scalingIntervalMin);
-            Executing exec = executingStateBuilder.build(ctx);
-            // => rescale
-            ctx.setCanScaleUp(true);
-            // scheduled rescale should restart the job after cooldown
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
-            exec.onNewResourcesAvailable();
-        }
-    }
-
-    @Test
-    public void testNotifyNewResourcesAvailableAfterCooldownIsOverStateChange() throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            final ExecutingStateBuilder executingStateBuilder =
-                    new ExecutingStateBuilder()
-                            .setScalingIntervalMin(Duration.ofSeconds(20L))
-                            .setLastRescale(Instant.now().minus(Duration.ofSeconds(30L)));
-            Executing exec = executingStateBuilder.build(ctx);
-            // => rescale
-            ctx.setCanScaleUp(true);
-            // immediate rescale
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
-            exec.onNewResourcesAvailable();
-        }
-    }
-
-    @Test
-    public void testNotifyNewResourcesAvailableWithCanScaleUpWithoutForceTransitionsToRestarting()
-            throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            Executing exec = new ExecutingStateBuilder().build(ctx);
-
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            // immediate rescale
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
-            ctx.setCanScaleUp(true); // => rescale
-            exec.onNewResourcesAvailable();
-        }
-    }
-
-    @Test
-    public void testNotifyNewResourcesAvailableWithCantScaleUpWithoutForceAndCantScaleUpWithForce()
-            throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            Executing exec =
-                    new ExecutingStateBuilder()
-                            .setScalingIntervalMax(Duration.ofSeconds(1L))
-                            .build(ctx);
-            // => schedule force rescale but resource lost on timeout => no rescale
-            ctx.setCanScaleUp(false, false);
-            exec.onNewResourcesAvailable();
-            ctx.assertNoStateTransition();
-        }
-    }
-
-    @Test
-    public void
-            testNotifyNewResourcesAvailableWithCantScaleUpWithoutForceAndCanScaleUpWithForceScheduled()
-                    throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            final ExecutingStateBuilder executingStateBuilder =
-                    new ExecutingStateBuilder()
-                            .setScalingIntervalMin(Duration.ofSeconds(20L))
-                            .setScalingIntervalMax(Duration.ofSeconds(30L))
-                            .setLastRescale(Instant.now().minus(Duration.ofSeconds(25L)));
-            Executing exec = executingStateBuilder.build(ctx);
-            // => schedule force rescale and resource still there after timeout => rescale
-            ctx.setCanScaleUp(false, true);
-            // rescale after scaling-interval.max
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
-            exec.onNewResourcesAvailable();
-        }
-    }
-
-    @Test
-    public void
-            testNotifyNewResourcesAvailableWithCantScaleUpWithoutForceAndCanScaleUpWithForceImmediate()
-                    throws Exception {
-        try (MockExecutingContext ctx = new MockExecutingContext()) {
-            final ExecutingStateBuilder executingStateBuilder =
-                    new ExecutingStateBuilder()
-                            .setScalingIntervalMin(Duration.ofSeconds(20L))
-                            .setScalingIntervalMax(Duration.ofSeconds(30L))
-                            .setLastRescale(Instant.now().minus(Duration.ofSeconds(70L)));
-            Executing exec = executingStateBuilder.build(ctx);
-            // => immediate force rescale and resource still there after timeout => rescale
-            ctx.setCanScaleUp(false, true);
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
-            exec.onNewResourcesAvailable();
-        }
-    }
-
-    @Test
-    public void testFailureReportedViaUpdateTaskExecutionStateCausesFailingOnNoRestart()
-            throws Exception {
+    void testFailureReportedViaUpdateTaskExecutionStateCausesFailingOnNoRestart() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             StateTrackingMockExecutionGraph returnsFailedStateExecutionGraph =
                     new StateTrackingMockExecutionGraph();
@@ -395,7 +418,7 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testFailureReportedViaUpdateTaskExecutionStateCausesRestart() throws Exception {
+    void testFailureReportedViaUpdateTaskExecutionStateCausesRestart() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             StateTrackingMockExecutionGraph returnsFailedStateExecutionGraph =
                     new StateTrackingMockExecutionGraph();
@@ -421,7 +444,7 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testFalseReportsViaUpdateTaskExecutionStateAreIgnored() throws Exception {
+    void testFalseReportsViaUpdateTaskExecutionStateAreIgnored() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             MockExecutionGraph returnsFailedStateExecutionGraph =
                     new MockExecutionGraph(false, Collections::emptyList);
@@ -447,7 +470,7 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testExecutionVertexMarkedAsFailedOnDeploymentFailure() throws Exception {
+    void testExecutionVertexMarkedAsFailedOnDeploymentFailure() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             MockExecutionJobVertex mejv =
                     new MockExecutionJobVertex(FailOnDeployMockExecutionVertex::new);
@@ -457,18 +480,18 @@ public class ExecutingTest extends TestLogger {
                     new ExecutingStateBuilder().setExecutionGraph(executionGraph).build(ctx);
 
             assertThat(
-                    ((FailOnDeployMockExecutionVertex) mejv.getMockExecutionVertex())
-                            .getMarkedFailure(),
-                    is(instanceOf(JobException.class)));
+                            ((FailOnDeployMockExecutionVertex) mejv.getMockExecutionVertex())
+                                    .getMarkedFailure())
+                    .isInstanceOf(JobException.class);
         }
     }
 
     @Test
-    public void testTransitionToStopWithSavepointState() throws Exception {
+    void testTransitionToStopWithSavepointState() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             CheckpointCoordinator coordinator =
                     new CheckpointCoordinatorTestingUtils.CheckpointCoordinatorBuilder()
-                            .build(EXECUTOR_RESOURCE.getExecutor());
+                            .build(EXECUTOR_EXTENSION.getExecutor());
             StateTrackingMockExecutionGraph mockedExecutionGraphWithCheckpointCoordinator =
                     new StateTrackingMockExecutionGraph() {
                         @Nullable
@@ -488,11 +511,11 @@ public class ExecutingTest extends TestLogger {
     }
 
     @Test
-    public void testCheckpointSchedulerIsStoppedOnStopWithSavepoint() throws Exception {
+    void testCheckpointSchedulerIsStoppedOnStopWithSavepoint() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             CheckpointCoordinator coordinator =
                     new CheckpointCoordinatorTestingUtils.CheckpointCoordinatorBuilder()
-                            .build(EXECUTOR_RESOURCE.getExecutor());
+                            .build(EXECUTOR_EXTENSION.getExecutor());
             StateTrackingMockExecutionGraph mockedExecutionGraphWithCheckpointCoordinator =
                     new StateTrackingMockExecutionGraph() {
                         @Nullable
@@ -509,28 +532,28 @@ public class ExecutingTest extends TestLogger {
             coordinator.startCheckpointScheduler();
 
             // we assume checkpointing to be enabled
-            assertThat(coordinator.isPeriodicCheckpointingStarted(), is(true));
+            assertThat(coordinator.isPeriodicCheckpointingStarted()).isTrue();
 
             ctx.setExpectStopWithSavepoint(assertNonNull());
             exec.stopWithSavepoint("file:///tmp/target", true, SavepointFormatType.CANONICAL);
 
-            assertThat(coordinator.isPeriodicCheckpointingStarted(), is(false));
+            assertThat(coordinator.isPeriodicCheckpointingStarted()).isFalse();
         }
     }
 
     @Test
-    public void testJobInformationMethods() throws Exception {
+    void testJobInformationMethods() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             Executing exec = new ExecutingStateBuilder().build(ctx);
             final JobID jobId = exec.getExecutionGraph().getJobID();
-            assertThat(exec.getJob(), instanceOf(ArchivedExecutionGraph.class));
-            assertThat(exec.getJob().getJobID(), is(jobId));
-            assertThat(exec.getJobStatus(), is(JobStatus.RUNNING));
+            assertThat(exec.getJob()).isInstanceOf(ArchivedExecutionGraph.class);
+            assertThat(exec.getJob().getJobID()).isEqualTo(jobId);
+            assertThat(exec.getJobStatus()).isEqualTo(JobStatus.RUNNING);
         }
     }
 
     @Test
-    public void testStateDoesNotExposeGloballyTerminalExecutionGraph() throws Exception {
+    void testStateDoesNotExposeGloballyTerminalExecutionGraph() throws Exception {
         try (MockExecutingContext ctx = new MockExecutingContext()) {
             final FinishingMockExecutionGraph finishingMockExecutionGraph =
                     new FinishingMockExecutionGraph();
@@ -546,24 +569,32 @@ public class ExecutingTest extends TestLogger {
             finishingMockExecutionGraph.completeTerminationFuture(JobStatus.FINISHED);
 
             // this is just a sanity check for the test
-            assertThat(executing.getExecutionGraph().getState(), is(JobStatus.FINISHED));
+            assertThat(executing.getExecutionGraph().getState()).isEqualTo(JobStatus.FINISHED);
 
-            assertThat(executing.getJobStatus(), is(JobStatus.RUNNING));
-            assertThat(executing.getJob().getState(), is(JobStatus.RUNNING));
-            assertThat(executing.getJob().getStatusTimestamp(JobStatus.FINISHED), is(0L));
+            assertThat(executing.getJobStatus()).isEqualTo(JobStatus.RUNNING);
+            assertThat(executing.getJob().getState()).isEqualTo(JobStatus.RUNNING);
+            assertThat(executing.getJob().getStatusTimestamp(JobStatus.FINISHED)).isZero();
         }
     }
 
     @Test
-    public void testExecutingChecksForNewResourcesWhenBeingCreated() throws Exception {
+    void testExecutingChecksForNewResourcesWhenBeingCreated() throws Exception {
+        final String onChangeEventLabel = "onChange";
+        final String onTriggerEventLabel = "onTrigger";
+        final Queue<String> actualEvents = new ArrayDeque<>();
         try (MockExecutingContext ctx = new MockExecutingContext()) {
-            ctx.setCanScaleUp(true);
-            ctx.setExpectRestarting(
-                    restartingArguments ->
-                            // immediate rescale
-                            assertThat(restartingArguments.getBackoffTime(), is(Duration.ZERO)));
+            new ExecutingStateBuilder()
+                    .setStateTransitionManagerFactory(
+                            new TestingStateTransitionManager.Factory(
+                                    () -> actualEvents.add(onChangeEventLabel),
+                                    () -> actualEvents.add(onTriggerEventLabel)))
+                    .build(ctx);
 
-            new ExecutingStateBuilder().build(ctx);
+            ctx.triggerExecutors();
+
+            assertThat(actualEvents.poll()).isEqualTo(onChangeEventLabel);
+            assertThat(actualEvents.poll()).isEqualTo(onTriggerEventLabel);
+            assertThat(actualEvents.isEmpty()).isTrue();
         }
     }
 
@@ -576,11 +607,11 @@ public class ExecutingTest extends TestLogger {
     private final class ExecutingStateBuilder {
         private ExecutionGraph executionGraph =
                 TestingDefaultExecutionGraphBuilder.newBuilder()
-                        .build(EXECUTOR_RESOURCE.getExecutor());
+                        .build(EXECUTOR_EXTENSION.getExecutor());
         private OperatorCoordinatorHandler operatorCoordinatorHandler;
-        private Duration scalingIntervalMin = Duration.ZERO;
-        @Nullable private Duration scalingIntervalMax;
-        private Instant lastRescale = Instant.now();
+        private StateTransitionManager.Factory stateTransitionManagerFactory =
+                TestingStateTransitionManager.Factory.noOpFactory();
+        private int rescaleOnFailedCheckpointCount = 1;
 
         private ExecutingStateBuilder() throws JobException, JobExecutionException {
             operatorCoordinatorHandler = new TestingOperatorCoordinatorHandler();
@@ -597,18 +628,15 @@ public class ExecutingTest extends TestLogger {
             return this;
         }
 
-        public ExecutingStateBuilder setScalingIntervalMin(Duration scalingIntervalMin) {
-            this.scalingIntervalMin = scalingIntervalMin;
+        public ExecutingStateBuilder setStateTransitionManagerFactory(
+                StateTransitionManager.Factory stateTransitionManagerFactory) {
+            this.stateTransitionManagerFactory = stateTransitionManagerFactory;
             return this;
         }
 
-        public ExecutingStateBuilder setScalingIntervalMax(Duration scalingIntervalMax) {
-            this.scalingIntervalMax = scalingIntervalMax;
-            return this;
-        }
-
-        public ExecutingStateBuilder setLastRescale(Instant lastRescale) {
-            this.lastRescale = lastRescale;
+        public ExecutingStateBuilder setRescaleOnFailedCheckpointCount(
+                int rescaleOnFailedCheckpointCount) {
+            this.rescaleOnFailedCheckpointCount = rescaleOnFailedCheckpointCount;
             return this;
         }
 
@@ -624,9 +652,11 @@ public class ExecutingTest extends TestLogger {
                         ctx,
                         ClassLoader.getSystemClassLoader(),
                         new ArrayList<>(),
-                        scalingIntervalMin,
-                        scalingIntervalMax,
-                        lastRescale);
+                        stateTransitionManagerFactory,
+                        1,
+                        rescaleOnFailedCheckpointCount,
+                        // will be ignored by the TestingRescaleManager.Factory
+                        Instant.now());
             } finally {
                 Preconditions.checkState(
                         !ctx.hadStateTransition,
@@ -652,8 +682,6 @@ public class ExecutingTest extends TestLogger {
                 new StateValidator<>("cancelling");
 
         private Function<Throwable, FailureResult> howToHandleFailure;
-        private boolean canScaleUpWithoutForce = false;
-        private boolean canScaleUpWithForce = false;
         private StateValidator<StopWithSavepointArguments> stopWithSavepointValidator =
                 new StateValidator<>("stopWithSavepoint");
         private CompletableFuture<String> mockedStopWithSavepointOperationFuture =
@@ -679,15 +707,6 @@ public class ExecutingTest extends TestLogger {
             this.howToHandleFailure = function;
         }
 
-        public void setCanScaleUp(boolean canScaleUpWithoutForce, boolean canScaleUpWithForce) {
-            this.canScaleUpWithoutForce = canScaleUpWithoutForce;
-            this.canScaleUpWithForce = canScaleUpWithForce;
-        }
-
-        public void setCanScaleUp(boolean canScaleUpWithoutForce) {
-            this.canScaleUpWithoutForce = canScaleUpWithoutForce;
-        }
-
         // --------- Interface Implementations ------- //
 
         @Override
@@ -709,12 +728,8 @@ public class ExecutingTest extends TestLogger {
         }
 
         @Override
-        public boolean shouldRescale(ExecutionGraph executionGraph, boolean forceRescale) {
-            if (forceRescale) {
-                return canScaleUpWithForce;
-            } else {
-                return canScaleUpWithoutForce;
-            }
+        public Optional<VertexParallelism> getAvailableVertexParallelism() {
+            return Optional.empty();
         }
 
         @Override

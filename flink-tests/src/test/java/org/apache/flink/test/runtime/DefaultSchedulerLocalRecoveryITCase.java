@@ -45,6 +45,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -60,13 +61,18 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
     private static final long TIMEOUT = 10_000L;
 
     @Test
-    @Category(FailsWithAdaptiveScheduler.class) // FLINK-21450
+    // The AdaptiveScheduler doesn't update the ExecutionGraph but creates a new Execution during
+    // local recovery. Recovering can also lead to a change in parallelism which makes the
+    // executionHistory non-linear. The lack of a linear executionHistory prevents us from applying
+    // the same test for the AdaptiveScheduler.
+    @Category(FailsWithAdaptiveScheduler.class)
     public void testLocalRecoveryFull() throws Exception {
         testLocalRecoveryInternal("full");
     }
 
     @Test
-    @Category(FailsWithAdaptiveScheduler.class) // FLINK-21450
+    // see comment in #testLocalRecoveryFull
+    @Category(FailsWithAdaptiveScheduler.class)
     public void testLocalRecoveryRegion() throws Exception {
         testLocalRecoveryInternal("region");
     }
@@ -108,7 +114,7 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
 
     private ArchivedExecutionGraph executeSchedulingTest(
             Configuration configuration, int parallelism) throws Exception {
-        final long slotIdleTimeout = TIMEOUT;
+        final Duration slotIdleTimeout = Duration.ofMillis(TIMEOUT);
         configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
 
         configuration.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse("64mb"));

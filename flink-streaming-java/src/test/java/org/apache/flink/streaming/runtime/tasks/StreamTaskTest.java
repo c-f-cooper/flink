@@ -76,6 +76,7 @@ import org.apache.flink.runtime.plugable.SerializationDelegate;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
 import org.apache.flink.runtime.state.AbstractStateBackend;
+import org.apache.flink.runtime.state.AsyncKeyedStateBackend;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.DoneFuture;
@@ -1299,7 +1300,7 @@ public class StreamTaskTest {
             } catch (InterruptedException e) {
                 asyncException = e;
             }
-            executor.submit(
+            executor.execute(
                     () -> {
                         if (asyncException != null) {
                             throw asyncException;
@@ -1344,7 +1345,7 @@ public class StreamTaskTest {
                             sleepTimeOutsideMail,
                             ioMetricGroup.getSoftBackPressuredTimePerSecond());
             // Make sure WaitingThread is started after Task starts processing.
-            executor.submit(
+            executor.execute(
                     waitingThread::start,
                     "This task will submit another task to execute after processing input once.");
 
@@ -1397,7 +1398,7 @@ public class StreamTaskTest {
                             sleepTimeOutsideMail,
                             ioMetricGroup.getIdleTimeMsPerSecond());
             // Make sure WaitingThread is started after Task starts processing.
-            executor.submit(
+            executor.execute(
                     waitingThread::start,
                     "Start WaitingThread after Task starts processing input.");
 
@@ -1499,7 +1500,7 @@ public class StreamTaskTest {
                     // 'afterInvoke' won't finish until this execution won't finish so it is
                     // impossible to wait on latch or something else.
                     Thread.sleep(5);
-                    mainMailboxExecutor.submit(() -> {}, "test");
+                    mainMailboxExecutor.execute(() -> {}, "test");
                 });
 
         // when: Calling the quiesce for mailbox and finishing the timer service.
@@ -2351,6 +2352,11 @@ public class StreamTaskTest {
                     @Override
                     public CheckpointableKeyedStateBackend<?> keyedStateBackend() {
                         return controller.keyedStateBackend();
+                    }
+
+                    @Override
+                    public AsyncKeyedStateBackend asyncKeyedStateBackend() {
+                        return controller.asyncKeyedStateBackend();
                     }
 
                     @Override

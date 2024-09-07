@@ -572,7 +572,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<Acknowledge> declareRequiredResources(
-            JobMasterId jobMasterId, ResourceRequirements resourceRequirements, Time timeout) {
+            JobMasterId jobMasterId, ResourceRequirements resourceRequirements, Duration timeout) {
         final JobID jobId = resourceRequirements.getJobId();
         try (MdcCloseable ignored = MdcUtils.withContext(MdcUtils.asContextData(jobId))) {
             final JobManagerRegistration jobManagerRegistration =
@@ -1178,6 +1178,14 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
             // TODO :: suggest failed task executor to stop itself
             slotManager.unregisterTaskManager(workerRegistration.getInstanceID(), cause);
             clusterPartitionTracker.processTaskExecutorShutdown(resourceID);
+
+            jobManagerRegistrations
+                    .values()
+                    .forEach(
+                            jobManagerRegistration ->
+                                    jobManagerRegistration
+                                            .getJobManagerGateway()
+                                            .disconnectTaskManager(resourceID, cause));
 
             workerRegistration.getTaskExecutorGateway().disconnectResourceManager(cause);
         } else {

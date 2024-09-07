@@ -27,6 +27,8 @@ import org.apache.flink.api.common.accumulators.Accumulator;
 import org.apache.flink.api.common.accumulators.AccumulatorHelper;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.DefaultJobExecutionStatusEvent;
+import org.apache.flink.core.execution.JobStatusChangedListener;
 import org.apache.flink.core.execution.JobStatusHook;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.SimpleCounter;
@@ -56,6 +58,7 @@ import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertex.FinalizeOnMasterContext;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
@@ -220,6 +223,9 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     /** Current status of the job execution. */
     private volatile JobStatus state = JobStatus.CREATED;
 
+    /** The job type of the job execution. */
+    private final JobType jobType;
+
     /** A future that completes once the job has reached a terminal state. */
     private final CompletableFuture<JobStatus> terminationFuture = new CompletableFuture<>();
 
@@ -298,11 +304,14 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
     private final TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory;
 
+    private final List<JobStatusChangedListener> jobStatusChangedListeners;
+
     // --------------------------------------------------------------------------------------------
     //   Constructors
     // --------------------------------------------------------------------------------------------
 
     public DefaultExecutionGraph(
+            JobType jobType,
             JobInformation jobInformation,
             ScheduledExecutorService futureExecutor,
             Executor ioExecutor,
@@ -322,8 +331,10 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
             ExecutionJobVertex.Factory executionJobVertexFactory,
             List<JobStatusHook> jobStatusHooks,
             MarkPartitionFinishedStrategy markPartitionFinishedStrategy,
-            TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory) {
+            TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory,
+            List<JobStatusChangedListener> jobStatusChangedListeners) {
 
+        this.jobType = jobType;
         this.executionGraphId = new ExecutionGraphID();
 
         this.jobInformation = checkNotNull(jobInformation);
@@ -391,6 +402,8 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         this.markPartitionFinishedStrategy = markPartitionFinishedStrategy;
 
         this.taskDeploymentDescriptorFactory = checkNotNull(taskDeploymentDescriptorFactory);
+
+        this.jobStatusChangedListeners = checkNotNull(jobStatusChangedListeners);
 
         LOG.info(
                 "Created execution graph {} for job {}.",
@@ -553,12 +566,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         return checkpointCoordinator;
     }
 
-    @Nullable
-    @Override
-    public CheckpointStatsTracker getCheckpointStatsTracker() {
-        return checkpointStatsTracker;
-    }
-
     @Override
     public KvStateLocationRegistry getKvStateLocationRegistry() {
         return kvStateLocationRegistry;
@@ -634,6 +641,11 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     @Override
     public JobStatus getState() {
         return state;
+    }
+
+    @Override
+    public JobType getJobType() {
+        return jobType;
     }
 
     @Override
@@ -1153,7 +1165,7 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     error);
 
             stateTimestamps[newState.ordinal()] = System.currentTimeMillis();
-            notifyJobStatusChange(newState);
+            notifyJobStatusChange(current, newState, error);
             notifyJobStatusHooks(newState, error);
             return true;
         } else {
@@ -1469,7 +1481,8 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         }
     }
 
-    ResultPartitionID createResultPartitionId(
+    @VisibleForTesting
+    public ResultPartitionID createResultPartitionId(
             final IntermediateResultPartitionID resultPartitionId) {
         final SchedulingResultPartition schedulingResultPartition =
                 getSchedulingTopology().getResultPartition(resultPartitionId);
@@ -1588,7 +1601,8 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         }
     }
 
-    private void notifyJobStatusChange(JobStatus newState) {
+    private void notifyJobStatusChange(
+            JobStatus oldState, JobStatus newState, @Nullable Throwable cause) {
         if (jobStatusListeners.size() > 0) {
             final long timestamp = System.currentTimeMillis();
 
@@ -1599,6 +1613,14 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                     LOG.warn("Error while notifying JobStatusListener", t);
                 }
             }
+        }
+
+        if (jobStatusChangedListeners.size() > 0) {
+            jobStatusChangedListeners.forEach(
+                    listener ->
+                            listener.onEvent(
+                                    new DefaultJobExecutionStatusEvent(
+                                            getJobID(), getJobName(), oldState, newState, cause)));
         }
     }
 

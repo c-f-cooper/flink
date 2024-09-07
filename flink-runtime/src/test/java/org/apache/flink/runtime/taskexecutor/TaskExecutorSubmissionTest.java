@@ -41,6 +41,7 @@ import org.apache.flink.runtime.io.network.partition.PartitionNotFoundException;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.TestingAbstractInvokables;
@@ -50,6 +51,7 @@ import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.PartitionDescriptor;
 import org.apache.flink.runtime.shuffle.PartitionDescriptorBuilder;
+import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.taskexecutor.slot.TaskSlotTable;
 import org.apache.flink.runtime.taskmanager.Task;
@@ -324,6 +326,78 @@ class TaskExecutorSubmissionTest {
                     .isEqualTo(ExecutionState.FINISHED);
             assertThat(taskSlotTable.getTask(eid2).getExecutionState())
                     .isEqualTo(ExecutionState.FINISHED);
+        }
+    }
+
+    @Test
+    void testGetPartitionWithMetrics() throws Exception {
+        ResourceID producerLocation = ResourceID.generate();
+        NettyShuffleDescriptor sdd =
+                createRemoteWithIdAndLocation(
+                        new IntermediateResultPartitionID(), producerLocation);
+
+        PartitionDescriptor partitionDescriptor =
+                PartitionDescriptorBuilder.newBuilder()
+                        .setPartitionId(sdd.getResultPartitionID().getPartitionId())
+                        .setPartitionType(ResultPartitionType.BLOCKING)
+                        .build();
+
+        ResultPartitionDeploymentDescriptor resultPartitionDeploymentDescriptor =
+                new ResultPartitionDeploymentDescriptor(partitionDescriptor, sdd, 1);
+        TaskDeploymentDescriptor tdd =
+                createTestTaskDeploymentDescriptor(
+                        "task",
+                        sdd.getResultPartitionID().getProducerId(),
+                        TestingAbstractInvokables.Sender.class,
+                        1,
+                        Collections.singletonList(resultPartitionDeploymentDescriptor),
+                        Collections.emptyList());
+
+        ExecutionAttemptID eid = tdd.getExecutionAttemptId();
+
+        final CompletableFuture<Void> taskFinishedFuture = new CompletableFuture<>();
+
+        final JobMasterId jobMasterId = JobMasterId.generate();
+        TestingJobMasterGateway testingJobMasterGateway =
+                new TestingJobMasterGatewayBuilder()
+                        .setFencingTokenSupplier(() -> jobMasterId)
+                        .build();
+
+        try (TaskSubmissionTestEnvironment env =
+                new TaskSubmissionTestEnvironment.Builder(jobId)
+                        .setResourceID(producerLocation)
+                        .setSlotSize(1)
+                        .addTaskManagerActionListener(
+                                eid, ExecutionState.FINISHED, taskFinishedFuture)
+                        .setJobMasterId(jobMasterId)
+                        .setJobMasterGateway(testingJobMasterGateway)
+                        .useRealNonMockShuffleEnvironment()
+                        .build(EXECUTOR_EXTENSION.getExecutor())) {
+            TaskExecutorGateway tmGateway = env.getTaskExecutorGateway();
+            TaskSlotTable<Task> taskSlotTable = env.getTaskSlotTable();
+
+            taskSlotTable.allocateSlot(0, jobId, tdd.getAllocationId(), Duration.ofSeconds(60));
+            tmGateway.submitTask(tdd, jobMasterId, timeout).get();
+
+            taskFinishedFuture.get();
+
+            Collection<PartitionWithMetrics> partitionWithMetricsCollection =
+                    tmGateway.getAndRetainPartitionWithMetrics(jobId).get();
+            assertThat(partitionWithMetricsCollection.size()).isOne();
+            PartitionWithMetrics partitionWithMetrics =
+                    partitionWithMetricsCollection.iterator().next();
+            assertThat(partitionWithMetrics.getPartition().getResultPartitionID())
+                    .isEqualTo(sdd.getResultPartitionID());
+            assertThat(partitionWithMetrics.getPartition().isUnknown()).isEqualTo(sdd.isUnknown());
+            assertThat(partitionWithMetrics.getPartition().storesLocalResourcesOn())
+                    .isEqualTo(sdd.storesLocalResourcesOn());
+            assertThat(
+                            partitionWithMetrics
+                                    .getPartitionMetrics()
+                                    .getPartitionBytes()
+                                    .getSubpartitionBytes())
+                    // the sender task will send two int value, the expected bytes is 16.
+                    .isEqualTo(new long[] {16});
         }
     }
 
@@ -663,6 +737,7 @@ class TaskExecutorSubmissionTest {
         JobInformation jobInformation =
                 new JobInformation(
                         jobId,
+                        JobType.STREAMING,
                         jobName,
                         serializedExecutionConfig,
                         jobConfiguration,

@@ -31,6 +31,7 @@ class OverAggregateTest extends TableTestBase {
 
   private val util = batchTestUtil()
   util.addTableSource[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
+  util.addTableSource[(Int, Long, String, Long)]("MyTableWithProctime", 'a, 'b, 'c, 'proctime)
 
   @Test
   def testOverWindowWithoutPartitionByOrderBy(): Unit = {
@@ -45,6 +46,18 @@ class OverAggregateTest extends TableTestBase {
   @Test
   def testOverWindowWithoutPartitionBy(): Unit = {
     util.verifyExecPlan("SELECT c, SUM(a) OVER (ORDER BY b) FROM MyTable")
+  }
+
+  @Test
+  def testDenseRankOnOrder(): Unit = {
+    util.verifyExecPlan(
+      "SELECT a, DENSE_RANK() OVER (PARTITION BY a ORDER BY proctime) FROM MyTableWithProctime")
+  }
+
+  @Test
+  def testRankOnOver(): Unit = {
+    util.verifyExecPlan(
+      "SELECT a, RANK() OVER (PARTITION BY a ORDER BY proctime) FROM MyTableWithProctime")
   }
 
   @Test
@@ -353,5 +366,33 @@ class OverAggregateTest extends TableTestBase {
       .isThrownBy(
         () =>
           util.verifyExecPlan("SELECT overAgg(b, a) FROM T GROUP BY TUMBLE(ts, INTERVAL '2' HOUR)"))
+  }
+
+  @Test
+  def testNestedOverAgg(): Unit = {
+    util.addTable(s"""
+                     |CREATE TEMPORARY TABLE src (
+                     |  a STRING,
+                     |  b STRING,
+                     |  ts TIMESTAMP_LTZ(3),
+                     |  watermark FOR ts as ts
+                     |) WITH (
+                     |  'connector' = 'values'
+                     |  ,'bounded' = 'true'
+                     |)
+                     |""".stripMargin)
+
+    util.verifyExecPlan(s"""
+                           |SELECT *
+                           |FROM (
+                           | SELECT
+                           |    *, count(*) OVER (PARTITION BY a ORDER BY ts) AS c2
+                           |  FROM (
+                           |    SELECT
+                           |      *, count(*) OVER (PARTITION BY a,b ORDER BY ts) AS c1
+                           |    FROM src
+                           |  )
+                           |)
+                           |""".stripMargin)
   }
 }

@@ -55,7 +55,7 @@ public class ConfigurationOptionLocator {
                 new OptionsClassLocation(
                         "flink-runtime", "org.apache.flink.runtime.highavailability"),
                 new OptionsClassLocation(
-                        "flink-streaming-java", "org.apache.flink.streaming.api.environment"),
+                        "flink-runtime", "org.apache.flink.streaming.api.environment"),
                 new OptionsClassLocation("flink-yarn", "org.apache.flink.yarn.configuration"),
                 new OptionsClassLocation(
                         "flink-metrics/flink-metrics-prometheus",
@@ -79,7 +79,11 @@ public class ConfigurationOptionLocator {
                 new OptionsClassLocation(
                         "flink-dstl/flink-dstl-dfs", "org.apache.flink.changelog.fs"),
                 new OptionsClassLocation(
-                        "flink-table/flink-sql-gateway", "org.apache.flink.table.gateway.rest.util")
+                        "flink-table/flink-sql-gateway",
+                        "org.apache.flink.table.gateway.rest.util"),
+                new OptionsClassLocation(
+                        "flink-external-resources/flink-external-resource-gpu",
+                        "org.apache.flink.externalresource.gpu")
             };
 
     private static final Set<String> EXCLUSIONS =
@@ -91,7 +95,8 @@ public class ConfigurationOptionLocator {
                             "org.apache.flink.streaming.api.environment.CheckpointConfig",
                             "org.apache.flink.contrib.streaming.state.PredefinedOptions",
                             "org.apache.flink.python.PythonConfig",
-                            "org.apache.flink.cep.configuration.SharedBufferCacheConfig"));
+                            "org.apache.flink.cep.configuration.SharedBufferCacheConfig",
+                            "org.apache.flink.table.api.config.LookupJoinHintOptions"));
 
     private static final String DEFAULT_PATH_PREFIX = "src/main/java";
 

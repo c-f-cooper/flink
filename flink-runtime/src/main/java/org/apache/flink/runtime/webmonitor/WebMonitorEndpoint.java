@@ -85,6 +85,7 @@ import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingJobsMetricsH
 import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingSubtasksMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingTaskManagersMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.JobManagerMetricsHandler;
+import org.apache.flink.runtime.rest.handler.job.metrics.JobManagerOperatorMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.JobMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.JobVertexMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.JobVertexWatermarksHandler;
@@ -177,8 +178,8 @@ import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 import org.apache.flink.util.concurrent.FutureUtils;
 
-import org.apache.flink.shaded.guava31.com.google.common.cache.Cache;
-import org.apache.flink.shaded.guava31.com.google.common.cache.CacheBuilder;
+import org.apache.flink.shaded.guava32.com.google.common.cache.Cache;
+import org.apache.flink.shaded.guava32.com.google.common.cache.CacheBuilder;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInboundHandler;
 
 import javax.annotation.Nullable;
@@ -522,6 +523,10 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
                 new TaskManagerMetricsHandler(
                         leaderRetriever, timeout, responseHeaders, metricFetcher);
 
+        final JobManagerOperatorMetricsHandler jobManagerOperatorMetricsHandler =
+                new JobManagerOperatorMetricsHandler(
+                        leaderRetriever, timeout, responseHeaders, metricFetcher);
+
         final JobManagerMetricsHandler jobManagerMetricsHandler =
                 new JobManagerMetricsHandler(
                         leaderRetriever, timeout, responseHeaders, metricFetcher);
@@ -794,6 +799,10 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
                         taskManagerMetricsHandler.getMessageHeaders(), taskManagerMetricsHandler));
         handlers.add(
                 Tuple2.of(jobManagerMetricsHandler.getMessageHeaders(), jobManagerMetricsHandler));
+        handlers.add(
+                Tuple2.of(
+                        jobManagerOperatorMetricsHandler.getMessageHeaders(),
+                        jobManagerOperatorMetricsHandler));
         handlers.add(
                 Tuple2.of(
                         aggregatingTaskManagersMetricsHandler.getMessageHeaders(),

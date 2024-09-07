@@ -45,6 +45,7 @@ import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.operators.testutils.DummyEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
+import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.DoneFuture;
@@ -85,13 +86,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointType.CHECKPOINT;
-import static org.apache.flink.shaded.guava31.com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
+import static org.apache.flink.shaded.guava32.com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 /** Tests for {@link SubtaskCheckpointCoordinator}. */
 class SubtaskCheckpointCoordinatorTest {
+    private static final CheckpointStorage CHECKPOINT_STORAGE = new JobManagerCheckpointStorage();
 
     @Test
     void testInitCheckpoint() throws IOException, CheckpointException {
@@ -194,6 +196,8 @@ class SubtaskCheckpointCoordinatorTest {
     void testForceAlignedCheckpointResultingInPriorityEvents() throws Exception {
         final long checkpointId = 42L;
         MockEnvironment mockEnvironment = MockEnvironment.builder().build();
+        mockEnvironment.setCheckpointStorageAccess(
+                CHECKPOINT_STORAGE.createCheckpointStorage(mockEnvironment.getJobID()));
 
         try (SubtaskCheckpointCoordinator coordinator =
                 new MockSubtaskCheckpointCoordinatorBuilder()
@@ -586,12 +590,13 @@ class SubtaskCheckpointCoordinatorTest {
     void testChannelStateWriteResultLeakAndNotFailAfterCheckpointAborted() throws Exception {
         String taskName = "test";
         DummyEnvironment env = new DummyEnvironment();
+        env.setCheckpointStorageAccess(CHECKPOINT_STORAGE.createCheckpointStorage(env.getJobID()));
         ChannelStateWriterImpl writer =
                 new ChannelStateWriterImpl(
                         env.getJobVertexId(),
                         taskName,
                         0,
-                        new JobManagerCheckpointStorage(),
+                        () -> env.getCheckpointStorageAccess(),
                         env.getChannelStateExecutorFactory(),
                         5);
         try (MockEnvironment mockEnvironment = MockEnvironment.builder().build();
@@ -646,12 +651,13 @@ class SubtaskCheckpointCoordinatorTest {
                 CheckpointOptions.unaligned(
                         CHECKPOINT, CheckpointStorageLocationReference.getDefault());
         DummyEnvironment env = new DummyEnvironment();
+        env.setCheckpointStorageAccess(CHECKPOINT_STORAGE.createCheckpointStorage(env.getJobID()));
         ChannelStateWriterImpl writer =
                 new ChannelStateWriterImpl(
                         env.getJobVertexId(),
                         taskName,
                         0,
-                        new JobManagerCheckpointStorage(),
+                        () -> env.getCheckpointStorageAccess(),
                         env.getChannelStateExecutorFactory(),
                         5);
         try (MockEnvironment mockEnvironment = MockEnvironment.builder().build();
