@@ -24,7 +24,7 @@ import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import java.util.stream.Stream;
 
 import static org.apache.flink.table.api.Expressions.$;
-import static org.apache.flink.table.api.Expressions.call;
+import static org.apache.flink.table.api.Expressions.concat;
 import static org.apache.flink.table.api.Expressions.lit;
 
 /** Test Regexp functions correct behaviour. */
@@ -37,6 +37,7 @@ class RegexpFunctionsITCase extends BuiltInFunctionTestBase {
                         regexpExtractTestCases(),
                         regexpExtractAllTestCases(),
                         regexpInstrTestCases(),
+                        regexpReplaceTestCases(),
                         regexpSubstrTestCases())
                 .flatMap(s -> s);
     }
@@ -121,17 +122,43 @@ class RegexpFunctionsITCase extends BuiltInFunctionTestBase {
         return Stream.of(
                 TestSetSpec.forFunction(
                                 BuiltInFunctionDefinitions.REGEXP_EXTRACT, "Check return type")
-                        .onFieldsWithData("22", "ABC")
+                        .onFieldsWithData("22", "ABC", "(")
                         .testResult(
-                                call("regexpExtract", $("f0"), "[A-Z]+"),
-                                "REGEXP_EXTRACT(f0,'[A-Z]+')",
+                                $("f0").regexpExtract("[A-Z]+"),
+                                "REGEXP_EXTRACT(f0, '[A-Z]+')",
                                 null,
                                 DataTypes.STRING().nullable())
                         .testResult(
-                                call("regexpExtract", $("f1"), "[A-Z]+"),
+                                $("f1").regexpExtract("[A-Z]+"),
                                 "REGEXP_EXTRACT(f1, '[A-Z]+')",
                                 "ABC",
-                                DataTypes.STRING().nullable()));
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpExtract($("f2")),
+                                "REGEXP_EXTRACT(f1, f2)",
+                                null,
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpExtract(concat("[A-", "Z]+")),
+                                "REGEXP_EXTRACT(f1, '[A-' || 'Z]+')",
+                                "ABC",
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpExtract(concat("(", "")),
+                                "REGEXP_EXTRACT(f1, '(' || '')",
+                                null,
+                                DataTypes.STRING().nullable()),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.REGEXP_EXTRACT,
+                                "Invalid literal regex fails at plan time")
+                        .onFieldsWithData("ABC")
+                        .andDataTypes(DataTypes.STRING())
+                        .testTableApiValidationError(
+                                $("f0").regexpExtract("("),
+                                "Invalid regular expression for REGEXP_EXTRACT:")
+                        .testSqlValidationError(
+                                "REGEXP_EXTRACT(f0, '(')",
+                                "Invalid regular expression for REGEXP_EXTRACT:"));
     }
 
     private Stream<TestSetSpec> regexpExtractAllTestCases() {
@@ -312,6 +339,54 @@ class RegexpFunctionsITCase extends BuiltInFunctionTestBase {
                                 "REGEXP_INSTR(f0, '1024')",
                                 "Invalid input arguments. Expected signatures are:\n"
                                         + "REGEXP_INSTR(str <CHARACTER_STRING>, regex <CHARACTER_STRING>)"));
+    }
+
+    private Stream<TestSetSpec> regexpReplaceTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.REGEXP_REPLACE)
+                        .onFieldsWithData(null, "foobar", "(")
+                        .andDataTypes(DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING())
+                        .testResult(
+                                $("f0").regexpReplace("foo", "X"),
+                                "REGEXP_REPLACE(f0, 'foo', 'X')",
+                                null,
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpReplace("foo", "X"),
+                                "REGEXP_REPLACE(f1, 'foo', 'X')",
+                                "Xbar",
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpReplace("o+", "X"),
+                                "REGEXP_REPLACE(f1, 'o+', 'X')",
+                                "fXbar",
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpReplace($("f2"), "X"),
+                                "REGEXP_REPLACE(f1, f2, 'X')",
+                                null,
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpReplace(concat("fo", "o"), "X"),
+                                "REGEXP_REPLACE(f1, 'fo' || 'o', 'X')",
+                                "Xbar",
+                                DataTypes.STRING().nullable())
+                        .testResult(
+                                $("f1").regexpReplace(concat("(", ""), "X"),
+                                "REGEXP_REPLACE(f1, '(' || '', 'X')",
+                                null,
+                                DataTypes.STRING().nullable()),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.REGEXP_REPLACE,
+                                "Invalid literal regex fails at plan time")
+                        .onFieldsWithData("foobar")
+                        .andDataTypes(DataTypes.STRING())
+                        .testTableApiValidationError(
+                                $("f0").regexpReplace("(", "X"),
+                                "Invalid regular expression for REGEXP_REPLACE:")
+                        .testSqlValidationError(
+                                "REGEXP_REPLACE(f0, '(', 'X')",
+                                "Invalid regular expression for REGEXP_REPLACE:"));
     }
 
     private Stream<TestSetSpec> regexpSubstrTestCases() {

@@ -213,7 +213,7 @@ export FLINK_LIB_DIR
 export FLINK_OPT_DIR
 
 source "${FLINK_BIN_DIR}/bash-java-utils.sh"
-setJavaRun "$FLINK_CONF_DIR"
+setJavaRun "$FLINK_CONF_DIR/config.yaml"
 YAML_CONF=$(updateAndGetFlinkConfiguration "${FLINK_CONF_DIR}" "${FLINK_BIN_DIR}" ${FLINK_LIB_DIR} -flatten)
 
 ########################################################################################################################
@@ -240,6 +240,8 @@ fi
 
 if [ -z "${MAX_LOG_FILE_NUMBER}" ]; then
     MAX_LOG_FILE_NUMBER=$(readFromConfig ${KEY_ENV_LOG_MAX} ${DEFAULT_ENV_LOG_MAX} "${YAML_CONF}")
+    # Remove leading and ending single quotes (if present) of value
+    MAX_LOG_FILE_NUMBER="$( echo "${MAX_LOG_FILE_NUMBER}" | sed -e "s/^'//"  -e "s/'$//" )"
     export MAX_LOG_FILE_NUMBER
 fi
 

@@ -38,8 +38,9 @@ import static java.util.Objects.requireNonNull;
  * <p>FLINK modifications are at lines
  *
  * <ol>
- *   <li>Should be removed after fixing CALCITE-6342: Lines 475-485
- *   <li>Should be removed after fix of FLINK-31350: Lines 552 ~ 564.
+ *   <li>Should be removed after fixing CALCITE-6342: Lines 100-102
+ *   <li>Should be removed after fixing CALCITE-6342: Lines 484-496
+ *   <li>Should be removed after fix of FLINK-31350: Lines 563-575.
  * </ol>
  */
 public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
@@ -118,6 +119,17 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     @Override
     public RelDataType createMapType(RelDataType keyType, RelDataType valueType) {
         MapSqlType newType = new MapSqlType(keyType, valueType, false);
+        return canonize(newType);
+    }
+
+    @Override
+    public RelDataType createFunctionSqlType(RelDataType parameterType, RelDataType returnType) {
+        return canonize(new FunctionSqlType(parameterType, returnType));
+    }
+
+    @Override
+    public RelDataType createMeasureType(RelDataType valueType) {
+        MeasureSqlType newType = MeasureSqlType.create(valueType);
         return canonize(newType);
     }
 
@@ -445,7 +457,7 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
                 if (types.size() > (i + 1)) {
                     RelDataType type1 = types.get(i + 1);
                     if (SqlTypeUtil.isDatetime(type1)) {
-                        resultType = type1;
+                        resultType = leastRestrictiveIntervalDatetimeType(type1, type);
                         return createTypeWithNullability(
                                 resultType, nullCount > 0 || nullableCount > 0);
                     }
@@ -465,8 +477,10 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
                 // datetime +/- interval (or integer) = datetime
                 if (types.size() > (i + 1)) {
                     RelDataType type1 = types.get(i + 1);
-                    if (SqlTypeUtil.isInterval(type1) || SqlTypeUtil.isIntType(type1)) {
-                        resultType = type;
+                    final boolean isInterval1 = SqlTypeUtil.isInterval(type1);
+                    final boolean isInt1 = SqlTypeUtil.isIntType(type1);
+                    if (isInterval1 || isInt1) {
+                        resultType = leastRestrictiveIntervalDatetimeType(type, type1);
                         return createTypeWithNullability(
                                 resultType, nullCount > 0 || nullableCount > 0);
                     }

@@ -189,7 +189,7 @@ final class AsyncCheckpointRunnable implements Runnable, Closeable {
 
             // finalize the async part of all by executing all snapshot runnables
             OperatorSnapshotFinalizer finalizedSnapshots =
-                    new OperatorSnapshotFinalizer(snapshotInProgress);
+                    OperatorSnapshotFinalizer.create(snapshotInProgress);
 
             jobManagerTaskOperatorSubtaskStates.putSubtaskStateByOperatorID(
                     operatorID, finalizedSnapshots.getJobManagerOwnedState());
@@ -373,7 +373,9 @@ final class AsyncCheckpointRunnable implements Runnable, Closeable {
         return finishedFuture;
     }
 
-    /** @return discarded full/incremental size (if available). */
+    /**
+     * @return discarded full/incremental size (if available).
+     */
     private Tuple2<Long, Long> cleanup() throws Exception {
         LOG.debug(
                 "Cleanup AsyncCheckpointRunnable for checkpoint {} of {}.",
